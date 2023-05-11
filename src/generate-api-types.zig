@@ -16,7 +16,7 @@ pub fn main() !void {
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
 
-    const output_file_unbuffered = try std.fs.createFileAbsolute(params.output_path, .{});
+    const output_file_unbuffered = try std.fs.cwd().createFile(params.output_path, .{});
     defer output_file_unbuffered.close();
 
     var output_file = std.io.bufferedWriter(output_file_unbuffered.writer());
@@ -26,7 +26,7 @@ pub fn main() !void {
     });
 
     var models_dir_contents: util.DirectoryFilesContents = blk: {
-        var models_dir = try std.fs.openIterableDirAbsolute(params.models, .{});
+        var models_dir = try std.fs.cwd().openIterableDir(params.models, .{});
         defer models_dir.close();
         var it = models_dir.iterateAssumeFirstIteration();
 
