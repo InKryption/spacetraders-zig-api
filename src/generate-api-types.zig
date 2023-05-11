@@ -228,25 +228,9 @@ pub fn main() !void {
         }
     }
 
-    const RequiredSetCtx = struct {
-        pub fn hash(ctx: @This(), key: std.json.Value) u64 {
-            _ = ctx;
-            return std.hash_map.hashString(key.String);
-        }
-        pub fn eql(ctx: @This(), a: std.json.Value, b: std.json.Value) bool {
-            _ = ctx;
-            return std.hash_map.eqlString(a.String, b.String);
-        }
-    };
-
-    const RequiredSet = std.HashMap(std.json.Value, void, RequiredSetCtx, std.hash_map.default_max_load_percentage);
     var required_set_buf = RequiredSet.init(allocator);
     defer required_set_buf.deinit();
 
-    const StructTypedefStackItem = struct {
-        start: usize,
-        obj: *const std.json.ObjectMap,
-    };
     var struct_typedef_stack_buf = std.ArrayList(StructTypedefStackItem).init(allocator);
     defer struct_typedef_stack_buf.deinit();
 
@@ -274,159 +258,7 @@ pub fn main() !void {
         try writeDescriptionAsCommentIfAvailable(output_writer, obj);
         try output_writer.print("pub const {s} = ", .{std.zig.fmtId(model_basename)});
         switch (model_type) {
-            .object => {
-                try struct_typedef_stack_buf.append(.{
-                    .start = 0,
-                    .obj = obj,
-                });
-
-                mainloop: while (struct_typedef_stack_buf.popOrNull()) |stack_item| {
-                    const start: usize = stack_item.start;
-                    const current_obj: *const std.json.ObjectMap = stack_item.obj;
-                    const properties_obj: *const std.json.ObjectMap = if (current_obj.getPtr("properties")) |val| &val.Object else {
-                        log.err("'object' missing expected field 'properties'", .{});
-                        return;
-                    };
-
-                    required_set_buf.clearRetainingCapacity();
-                    if (current_obj.get("required")) |list_val| {
-                        for (list_val.Array.items) |val| {
-                            try required_set_buf.putNoClobber(val, {});
-                        }
-                    }
-
-                    if (start == 0) try output_writer.writeAll("struct {");
-                    if (properties_obj.count() - start > 0) try output_writer.writeAll("\n");
-
-                    prop_loop: for (properties_obj.keys()[start..], properties_obj.values()[start..], start..) |prop_name, *prop_val, i| {
-                        if (i != 0) try output_writer.writeAll(",\n");
-
-                        const prop: *const std.json.ObjectMap = &prop_val.Object;
-                        const prop_type = switch (typeOrModelRef(prop, .default) orelse {
-                            log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
-                            continue;
-                        }) {
-                            .type => |prop_type| prop_type,
-                            .model => |model_ref| {
-                                try output_writer.print("    {s}: {s}{s}", .{
-                                    std.zig.fmtId(prop_name),
-                                    if (!required_set_buf.contains(.{ .String = prop_name })) "?" else "",
-                                    std.zig.fmtId(std.fs.path.stem(model_ref)),
-                                });
-                                continue;
-                            },
-                        };
-
-                        if (prop_type == .object) {
-                            try writeDescriptionAsCommentIfAvailable(output_writer, prop);
-                        }
-                        try output_writer.print("    {s}: ", .{std.zig.fmtId(prop_name)});
-
-                        if (!required_set_buf.contains(std.json.Value{ .String = prop_name })) {
-                            try output_writer.writeAll("?");
-                        }
-                        switch (prop_type) {
-                            .object => {
-                                try struct_typedef_stack_buf.appendSlice(&.{
-                                    .{ .start = i + 1, .obj = current_obj },
-                                    .{ .start = 0, .obj = prop },
-                                });
-                                continue :mainloop;
-                            },
-                            .array => {
-                                const items_val = prop.getPtr("items") orelse {
-                                    log.err("array missing expected field 'items'", .{});
-                                    try output_writer.writeAll("@compileError(\"unresolved array type\")");
-                                    continue;
-                                };
-                                var items: *const std.json.ObjectMap = &items_val.Object;
-
-                                while (true) {
-                                    const items_type = switch (typeOrModelRef(items, .default) orelse {
-                                        log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
-                                        continue :prop_loop;
-                                    }) {
-                                        .type => |items_type| items_type,
-                                        .model => |model_ref| {
-                                            try output_writer.print(
-                                                "[]const {s}",
-                                                .{std.zig.fmtId(std.fs.path.stem(model_ref))},
-                                            );
-                                            continue :prop_loop;
-                                        },
-                                    };
-                                    try output_writer.writeAll("[]const ");
-                                    switch (items_type) {
-                                        .object => {
-                                            try struct_typedef_stack_buf.appendSlice(&.{
-                                                .{ .start = i + 1, .obj = current_obj },
-                                                .{ .start = 0, .obj = items },
-                                            });
-                                            continue :mainloop;
-                                        },
-                                        .array => {
-                                            const sub_items_val = items.getPtr("items") orelse {
-                                                log.err("array missing expected field 'items'", .{});
-                                                try output_writer.writeAll("@compileError(\"unresolved array type\")");
-                                                continue :prop_loop;
-                                            };
-                                            items = &sub_items_val.Object;
-                                            continue;
-                                        },
-                                        .string => try output_writer.writeAll("u8"),
-                                        .integer => try writeIntegerTypeDef(output_writer, items),
-                                        .number => try writeNumberTypeDef(output_writer, prop, params.number_as_string),
-                                        .boolean => try output_writer.writeAll("bool"),
-                                    }
-                                    break;
-                                }
-                            },
-                            .string => try writeStringTypeDef(output_writer, prop),
-                            .integer => try writeIntegerTypeDef(output_writer, prop),
-                            .number => try writeNumberTypeDef(output_writer, prop, params.number_as_string),
-                            .boolean => try output_writer.writeAll("bool"),
-                        }
-
-                        if (prop.get("default")) |default_val| {
-                            switch (prop_type) {
-                                .object, .array => |tag| log.err(
-                                    "Default value '{}' for type '{s}' unhandled",
-                                    .{ util.fmtJson(default_val, .{}), @tagName(tag) },
-                                ),
-                                .string => |tag| switch (default_val) {
-                                    .String => |val| try output_writer.print(" = \"{s}\"", .{val}),
-                                    else => log.err(
-                                        "Can't convert '{s}' to '{s}'",
-                                        .{ @tagName(default_val), @tagName(tag) },
-                                    ),
-                                },
-                                .integer,
-                                .number,
-                                => |tag| switch (default_val) {
-                                    .NumberString => |val| try output_writer.print(" = {s}", .{val}),
-                                    .Integer => |val| try output_writer.print(" = {d}", .{val}),
-                                    .Float => |val| try output_writer.print(" = {d}", .{val}),
-                                    else => log.err(
-                                        "Can't convert '{s}' to '{s}'",
-                                        .{ @tagName(default_val), @tagName(tag) },
-                                    ),
-                                },
-                                .boolean => |tag| switch (default_val) {
-                                    .Bool => |val| try output_writer.print(" = {}", .{val}),
-                                    else => log.err(
-                                        "Can't convert '{s}' to '{s}'",
-                                        .{ @tagName(default_val), @tagName(tag) },
-                                    ),
-                                },
-                            }
-                        }
-                    }
-                    if (properties_obj.count() > 0) {
-                        try output_writer.writeAll(",\n");
-                    }
-                    try output_writer.writeAll("}");
-                }
-            },
+            .object => try writeStructTypeDef(output_writer, obj, &struct_typedef_stack_buf, &required_set_buf, params.number_as_string, .default),
             .string => {
                 if (!obj.contains("enum")) {
                     log.warn("Model '{s}' of type 'string' missing expected field 'enum'", .{model_name});
@@ -484,6 +316,175 @@ inline fn writeDescriptionAsCommentIfAvailable(out_writer: anytype, relevant_obj
     var line_it = std.mem.tokenize(u8, desc, "\r\n");
     while (line_it.next()) |line| {
         try out_writer.print("/// {s}\n", .{line});
+    }
+}
+
+const StructTypedefStackItem = struct {
+    start: usize,
+    obj: *const std.json.ObjectMap,
+};
+const RequiredSetCtx = struct {
+    pub fn hash(ctx: @This(), key: std.json.Value) u64 {
+        _ = ctx;
+        return std.hash_map.hashString(key.String);
+    }
+    pub fn eql(ctx: @This(), a: std.json.Value, b: std.json.Value) bool {
+        _ = ctx;
+        return std.hash_map.eqlString(a.String, b.String);
+    }
+};
+
+const RequiredSet = std.HashMap(std.json.Value, void, RequiredSetCtx, std.hash_map.default_max_load_percentage);
+inline fn writeStructTypeDef(
+    output_writer: anytype,
+    record_type_meta: *const std.json.ObjectMap,
+    struct_typedef_stack_buf: *std.ArrayList(StructTypedefStackItem),
+    required_set_buf: *RequiredSet,
+    number_as_string: bool,
+    comptime log_scope: @TypeOf(.enum_literal),
+) !void {
+    const log = std.log.scoped(log_scope);
+
+    try struct_typedef_stack_buf.append(.{
+        .start = 0,
+        .obj = record_type_meta,
+    });
+
+    mainloop: while (struct_typedef_stack_buf.popOrNull()) |stack_item| {
+        const start: usize = stack_item.start;
+        const current_obj: *const std.json.ObjectMap = stack_item.obj;
+        const properties_obj: *const std.json.ObjectMap = if (current_obj.getPtr("properties")) |val| &val.Object else {
+            log.err("'object' missing expected field 'properties'", .{});
+            return;
+        };
+
+        required_set_buf.clearRetainingCapacity();
+        if (current_obj.get("required")) |list_val| {
+            for (list_val.Array.items) |val| {
+                try required_set_buf.putNoClobber(val, {});
+            }
+        }
+
+        if (start == 0) try output_writer.writeAll("struct {");
+        if (properties_obj.count() - start > 0) try output_writer.writeAll("\n");
+
+        for (properties_obj.keys()[start..], properties_obj.values()[start..], start..) |prop_name, *prop_val, i| {
+            if (i != 0) try output_writer.writeAll(",\n");
+
+            const prop: *const std.json.ObjectMap = &prop_val.Object;
+            const prop_type = switch (typeOrModelRef(prop, .default) orelse {
+                log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
+                continue;
+            }) {
+                .type => |prop_type| prop_type,
+                .model => |model_ref| {
+                    try output_writer.print("    {s}: {s}{s}", .{
+                        std.zig.fmtId(prop_name),
+                        if (!required_set_buf.contains(.{ .String = prop_name })) "?" else "",
+                        std.zig.fmtId(std.fs.path.stem(model_ref)),
+                    });
+                    continue;
+                },
+            };
+
+            if (prop_type == .object) {
+                try writeDescriptionAsCommentIfAvailable(output_writer, prop);
+            }
+            try output_writer.print("    {s}: ", .{std.zig.fmtId(prop_name)});
+
+            if (!required_set_buf.contains(std.json.Value{ .String = prop_name })) {
+                try output_writer.writeAll("?");
+            }
+            switch (prop_type) {
+                .object => {
+                    try struct_typedef_stack_buf.appendSlice(&.{
+                        .{ .start = i + 1, .obj = current_obj },
+                        .{ .start = 0, .obj = prop },
+                    });
+                    continue :mainloop;
+                },
+                .array => {
+                    const items_val = prop.getPtr("items") orelse {
+                        log.err("array missing expected field 'items'", .{});
+                        try output_writer.writeAll("@compileError(\"unresolved array type\")");
+                        continue;
+                    };
+                    const items: *const std.json.ObjectMap = &items_val.Object;
+
+                    const type_or_model_ref = typeOrModelRef(items, .default) orelse {
+                        log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
+                        continue;
+                    };
+                    const items_type = switch (type_or_model_ref) {
+                        .type => |items_type| items_type,
+                        .model => |model_ref| {
+                            try output_writer.print(
+                                "[]const {s}",
+                                .{std.zig.fmtId(std.fs.path.stem(model_ref))},
+                            );
+                            continue;
+                        },
+                    };
+                    try output_writer.writeAll("[]const ");
+                    switch (items_type) {
+                        .object => {
+                            try struct_typedef_stack_buf.appendSlice(&.{
+                                .{ .start = i + 1, .obj = current_obj },
+                                .{ .start = 0, .obj = items },
+                            });
+                            continue :mainloop;
+                        },
+                        .array => @panic("TODO:"), // TODO
+                        .string => try output_writer.writeAll("u8"),
+                        .integer => try writeIntegerTypeDef(output_writer, items),
+                        .number => try writeNumberTypeDef(output_writer, prop, number_as_string),
+                        .boolean => try output_writer.writeAll("bool"),
+                    }
+                },
+                .string => try writeStringTypeDef(output_writer, prop),
+                .integer => try writeIntegerTypeDef(output_writer, prop),
+                .number => try writeNumberTypeDef(output_writer, prop, number_as_string),
+                .boolean => try output_writer.writeAll("bool"),
+            }
+
+            if (prop.get("default")) |default_val| {
+                switch (prop_type) {
+                    .object, .array => |tag| log.err(
+                        "Default value '{}' for type '{s}' unhandled",
+                        .{ util.fmtJson(default_val, .{}), @tagName(tag) },
+                    ),
+                    .string => |tag| switch (default_val) {
+                        .String => |val| try output_writer.print(" = \"{s}\"", .{val}),
+                        else => log.err(
+                            "Can't convert '{s}' to '{s}'",
+                            .{ @tagName(default_val), @tagName(tag) },
+                        ),
+                    },
+                    .integer,
+                    .number,
+                    => |tag| switch (default_val) {
+                        .NumberString => |val| try output_writer.print(" = {s}", .{val}),
+                        .Integer => |val| try output_writer.print(" = {d}", .{val}),
+                        .Float => |val| try output_writer.print(" = {d}", .{val}),
+                        else => log.err(
+                            "Can't convert '{s}' to '{s}'",
+                            .{ @tagName(default_val), @tagName(tag) },
+                        ),
+                    },
+                    .boolean => |tag| switch (default_val) {
+                        .Bool => |val| try output_writer.print(" = {}", .{val}),
+                        else => log.err(
+                            "Can't convert '{s}' to '{s}'",
+                            .{ @tagName(default_val), @tagName(tag) },
+                        ),
+                    },
+                }
+            }
+        }
+        if (properties_obj.count() > 0) {
+            try output_writer.writeAll(",\n");
+        }
+        try output_writer.writeAll("}");
     }
 }
 
