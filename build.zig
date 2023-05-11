@@ -1,7 +1,7 @@
 const std = @import("std");
 const Build = std.Build;
 
-const apidocs = @import("apidocs");
+pub const apidocs = @import("apidocs");
 
 pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
