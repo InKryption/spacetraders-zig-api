@@ -1,0 +1,10 @@
+.{
+    .name = "spacetraders-api",
+    .version = "0.0.1",
+    .dependencies = .{
+        .apidocs = .{
+            .url = "https://github.com/InKryption/api-docs/archive/07039cd6e4d94e8c552b5c0167d706d976315061.tar.gz",
+            .hash = "1220f2ccfab25bb8a40dd3e6df2f62e1b6b7c7e92b4fb16a71edf121af95099918ce",
+        },
+    },
+}
