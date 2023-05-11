@@ -1,126 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const Params = struct {
-    models: []const u8,
-    output_path: []const u8,
-    number_as_string: bool,
-
-    const ParamId = enum {
-        @"num-as-string",
-        models,
-        @"output-path",
-
-        inline fn isFlag(id: ParamId) bool {
-            return switch (id) {
-                .models,
-                .@"output-path",
-                => false,
-                .@"num-as-string" => true,
-            };
-        }
-    };
-
-    pub fn deinit(params: Params, ally: std.mem.Allocator) void {
-        ally.free(params.output_path);
-        ally.free(params.models);
-    }
-
-    pub fn parseCurrentProcess(
-        allocator: std.mem.Allocator,
-        comptime log_scope: @TypeOf(.enum_literal),
-    ) (ParseError || error{EmptyArgv})!Params {
-        var argv = try std.process.argsWithAllocator(allocator);
-        defer argv.deinit();
-        if (!argv.skip()) return error.EmptyArgv;
-        return try Params.parse(allocator, log_scope, &argv);
-    }
-
-    pub const ParseError = std.mem.Allocator.Error || error{
-        MissingDashDashPrefix,
-        UnrecognizedParameterName,
-        MissingArgumentValue,
-        InvalidParameterFlagValue,
-        MissingArgument,
-    };
-
-    pub fn parse(
-        allocator: std.mem.Allocator,
-        comptime log_scope: @TypeOf(.enum_literal),
-        argv: anytype,
-    ) ParseError!Params {
-        const log = std.log.scoped(log_scope);
-
-        var results: struct {
-            models: ?[]const u8 = null,
-            @"output-path": ?[]const u8 = null,
-            @"num-as-string": ?bool = null,
-        } = .{};
-
-        while (true) {
-            var maybe_next_tok: ?[]const u8 = null;
-            const id: Params.ParamId = id: {
-                const str = std.mem.trim(u8, argv.next() orelse break, &std.ascii.whitespace);
-                const maybe_name = util.stripPrefix(u8, str, "--") orelse {
-                    log.err("Expected parameter id preceeded by '--', found '{s}'", .{str});
-                    return error.MissingDashDashPrefix;
-                };
-                const name: []const u8 = if (std.mem.indexOfScalar(u8, maybe_name, '=')) |eql_idx| name: {
-                    const next_tok = std.mem.trim(u8, maybe_name[eql_idx + 1 ..], &std.ascii.whitespace);
-                    if (next_tok.len != 0) {
-                        maybe_next_tok = next_tok;
-                    }
-                    break :name maybe_name[0..eql_idx];
-                } else maybe_name;
-
-                break :id std.meta.stringToEnum(Params.ParamId, name) orelse {
-                    log.err("Unrecognized parameter name '{s}'", .{str});
-                    return error.UnrecognizedParameterName;
-                };
-            };
-            const next_tok: []const u8 = if (maybe_next_tok) |next_tok|
-                std.mem.trim(u8, next_tok, &std.ascii.whitespace)
-            else if (argv.next()) |next_tok| next_tok else blk: {
-                if (id.isFlag()) break :blk "true";
-                log.err("Expected value for parameter '{s}'", .{@tagName(id)});
-                return error.MissingArgumentValue;
-            };
-            switch (id) {
-                inline //
-                .models,
-                .@"output-path",
-                => |tag| {
-                    const field_ptr = &@field(results, @tagName(tag));
-                    const new_slice = try allocator.realloc(@constCast(field_ptr.* orelse ""), next_tok.len);
-                    @memcpy(new_slice, next_tok);
-                    field_ptr.* = new_slice;
-                },
-                .@"num-as-string" => |tag| {
-                    const bool_tag = std.meta.stringToEnum(enum { false, true }, next_tok) orelse {
-                        log.err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ @tagName(tag), next_tok });
-                        return error.InvalidParameterFlagValue;
-                    };
-                    results.@"num-as-string" = switch (bool_tag) {
-                        .false => false,
-                        .true => true,
-                    };
-                },
-            }
-        }
-
-        return Params{
-            .models = results.models orelse {
-                log.err("Missing argument 'models'.", .{});
-                return error.MissingArgument;
-            },
-            .output_path = results.@"output-path" orelse {
-                log.err("Missing argument 'output-path'.", .{});
-                return error.MissingArgument;
-            },
-            .number_as_string = results.@"num-as-string" orelse false,
-        };
-    }
-};
+const util = @import("util.zig");
+const Params = @import("Params.zig");
 
 const number_as_string_subst_decl_name = "NumberString";
 
@@ -139,91 +21,44 @@ pub fn main() !void {
 
     var output_file = std.io.bufferedWriter(output_file_unbuffered.writer());
     const output_writer = output_file.writer();
-    defer {
-        const max_retries = 3;
-        for (0..max_retries) |_| {
-            output_file.flush() catch |err| {
-                log.warn("{s}, failed to flush output", .{@errorName(err)});
-                continue;
-            };
-            break;
-        } else log.err("Failed to flush output after {d} attempts", .{max_retries});
-    }
+    defer util.attemptFlush(&output_file, .output, .{
+        .max_retries = 3,
+    });
 
-    var json_contents_buffer = std.ArrayList(u8).init(allocator);
-    defer json_contents_buffer.deinit();
-
-    var json_content_map = std.StringArrayHashMap(struct { usize, usize }).init(allocator);
-    defer for (json_content_map.keys()) |key| {
-        allocator.free(key);
-    } else json_content_map.deinit();
-
-    { // collect models file contents
+    var models_dir_contents: util.DirectoryFilesContents = blk: {
         var models_dir = try std.fs.openIterableDirAbsolute(params.models, .{});
         defer models_dir.close();
-
         var it = models_dir.iterateAssumeFirstIteration();
-        while (try it.next()) |entry| {
-            switch (entry.kind) {
-                .File => {},
 
-                .BlockDevice,
-                .CharacterDevice,
-                .Directory,
-                .NamedPipe,
-                .SymLink,
-                .UnixDomainSocket,
-                .Whiteout,
-                .Door,
-                .EventPort,
-                .Unknown,
-                => |tag| {
-                    log.err("Unhandled file kind '{s}'.", .{@tagName(tag)});
-                },
-            }
-
-            const ext = std.fs.path.extension(entry.name);
-            if (!std.mem.eql(u8, ext, ".json")) continue;
-
-            const gop = try json_content_map.getOrPut(entry.name);
-            if (gop.found_existing) {
-                log.err("Encountered '{s}' more than once", .{entry.name});
-                continue;
-            }
-            errdefer assert(json_content_map.swapRemove(entry.name));
-
-            const name = try allocator.dupe(u8, entry.name);
-            errdefer allocator.free(name);
-            gop.key_ptr.* = name; // safe, because they will have the same hash (same string content)
-
-            const file = try models_dir.dir.openFile(name, .{});
-            defer file.close();
-
-            const start = json_contents_buffer.items.len;
-            try file.reader().readAllArrayList(&json_contents_buffer, 1 << 21);
-            const end = json_contents_buffer.items.len;
-            gop.value_ptr.* = .{ start, end };
-        }
-    }
+        break :blk try util.jsonDirectoryFilesContents(
+            allocator,
+            models_dir,
+            &it,
+            .@"collect-models",
+        );
+    };
+    defer models_dir_contents.deinit(allocator);
 
     var models_arena = std.heap.ArenaAllocator.init(allocator);
     defer models_arena.deinit();
 
     var models_json = std.StringArrayHashMap(std.json.Value).init(allocator);
     defer models_json.deinit();
-    try models_json.ensureUnusedCapacity(json_content_map.count());
+    try models_json.ensureUnusedCapacity(models_dir_contents.fileCount());
 
     { // populate models_json
-        var parser = std.json.Parser.init(models_arena.allocator(), false);
+        var parser = std.json.Parser.init(models_arena.allocator(), true);
         defer parser.deinit();
 
-        for (json_content_map.keys(), json_content_map.values()) |key, value| {
+        var it = models_dir_contents.iterator();
+        while (it.next()) |entry| {
             parser.reset();
-            const gop = try models_json.getOrPut(key);
+
+            var value_tree = try parser.parse(entry.value);
+            errdefer value_tree.deinit();
+
+            const gop = models_json.getOrPutAssumeCapacity(entry.key);
             assert(!gop.found_existing);
-            errdefer assert(models_json.swapRemove(key));
-            const contents = json_contents_buffer.items[value[0]..value[1]];
-            const value_tree = try parser.parse(contents);
             gop.value_ptr.* = value_tree.root;
         }
     }
@@ -234,24 +69,22 @@ pub fn main() !void {
     var struct_typedef_stack_buf = std.ArrayList(StructTypedefStackItem).init(allocator);
     defer struct_typedef_stack_buf.deinit();
 
-    if (params.number_as_string) {
-        try output_writer.print(
-            \\/// Represents a floating point number in string representation.
-            \\pub const {s} = []const u8;
-            \\
-        , .{number_as_string_subst_decl_name});
-    }
+    if (params.number_as_string) try output_writer.print(
+        \\/// Represents a floating point number in string representation.
+        \\pub const {s} = []const u8;
+        \\
+    , .{number_as_string_subst_decl_name});
 
-    for (models_json.keys(), @as([]const std.json.Value, models_json.values())) |model_name, *value| {
+    for (models_json.keys(), models_json.values()) |model_name, *value| {
         const model_basename = std.fs.path.stem(model_name);
         const obj: *const std.json.ObjectMap = &value.Object;
 
-        const model_type_str = if (obj.get("type")) |val| val.String else {
-            log.err("Model '{s}' missing field 'type'", .{model_name});
-            continue;
-        };
-        const model_type = std.meta.stringToEnum(DataType, model_type_str) orelse {
-            log.err("Model '{s}' has unexpected type '{s}'", .{ model_name, model_type_str });
+        const model_type = getTypeRecordFieldValue(obj) catch |err| {
+            switch (err) {
+                error.NotPresent => log.err("Top level model '{s}' missing field 'type'", .{model_name}),
+                error.NotAString => log.err("Top level model '{s}' has a field 'type', which isn't a string", .{model_name}),
+                error.UnrecognizedType => log.err("Top level model '{s}' has a field 'type' with an unrecognized value", .{model_name}),
+            }
             continue;
         };
 
@@ -259,20 +92,42 @@ pub fn main() !void {
         try output_writer.print("pub const {s} = ", .{std.zig.fmtId(model_basename)});
         switch (model_type) {
             .object => try writeStructTypeDef(output_writer, obj, &struct_typedef_stack_buf, &required_set_buf, params.number_as_string, .default),
-            .string => {
-                if (!obj.contains("enum")) {
-                    log.warn("Model '{s}' of type 'string' missing expected field 'enum'", .{model_name});
+            .array => blk: {
+                const nest_unwrapped_res = (try writeArrayNestingGetChild(output_writer, obj, .default)) orelse continue;
+                const items_type = switch (nest_unwrapped_res.kind) {
+                    .type => |data_type| data_type,
+                    .model => |model_ref| {
+                        try output_writer.writeAll(std.fs.path.stem(model_ref));
+                        break :blk;
+                    },
+                };
+                switch (items_type) {
+                    .object => {
+                        try struct_typedef_stack_buf.appendSlice(&.{
+                            .{ .start = 0, .obj = nest_unwrapped_res.items },
+                        });
+                        continue;
+                    },
+                    .array => unreachable, // calling `writeArrayNestingGetChild` already handles nested array child types
+                    .string => try output_writer.writeAll("u8"),
+                    .integer => try writeIntegerTypeDef(output_writer, nest_unwrapped_res.items),
+                    .number => try writeNumberTypeDef(output_writer, nest_unwrapped_res.items, params.number_as_string),
+                    .boolean => try output_writer.writeAll("bool"),
                 }
+            },
+            .string => {
+                if (!obj.contains("enum")) log.warn(
+                    "Top level model '{s}' of type 'string' missing expected field 'enum', and will be an alias for '[]const u8'",
+                    .{model_name},
+                );
                 try writeStringTypeDef(output_writer, obj);
             },
             .integer => try writeIntegerTypeDef(output_writer, obj),
             .number => try writeNumberTypeDef(output_writer, obj, params.number_as_string),
-            .array, // <- TODO: would have to move the code just above this in the 'object' branch into a function to do this correctly. but that's going to be very annoying
-            .boolean,
-            => |tag| log.err(
-                "Top level model '{s}' has unexpected type '{s}'.",
-                .{ model_name, @tagName(tag) },
-            ),
+            .boolean => {
+                log.warn("Top level model '{s}' is of type 'boolean', and thus will be an alias for 'bool'", .{model_name});
+                try output_writer.writeAll("bool");
+            },
         }
         try output_writer.writeAll(";\n");
     }
@@ -290,7 +145,10 @@ const TypeOrModelRef = union(enum) {
     model: []const u8,
     type: DataType,
 };
-inline fn typeOrModelRef(type_record: *const std.json.ObjectMap, comptime log_scope: @TypeOf(.enum_literal)) ?TypeOrModelRef {
+inline fn getTypeOrModelRef(
+    type_record: *const std.json.ObjectMap,
+    comptime log_scope: @TypeOf(.enum_literal),
+) ?TypeOrModelRef {
     const log = std.log.scoped(log_scope);
     if (type_record.get("$ref")) |model_ref_path| {
         if (type_record.count() != 1) {
@@ -302,12 +160,59 @@ inline fn typeOrModelRef(type_record: *const std.json.ObjectMap, comptime log_sc
         };
         return .{ .model = ref };
     }
-    const prop_type_str: []const u8 = if (type_record.get("type")) |type_val|
-        type_val.String
-    else
+
+    return .{ .type = getTypeRecordFieldValue(type_record) catch |err| {
+        switch (err) {
+            error.NotPresent => log.err("Property missing expected field 'type', and also has no '$ref' field", .{}),
+            error.NotAString => log.err("Property has a field 'type' which is not a string", .{}),
+            error.UnrecognizedType => log.err("Property has a field 'type' with an unrecognized value", .{}),
+        }
         return null;
-    const prop_type = std.meta.stringToEnum(DataType, prop_type_str) orelse return null;
-    return .{ .type = prop_type };
+    } };
+}
+
+inline fn getTypeRecordFieldValue(
+    type_record: *const std.json.ObjectMap,
+) error{ NotPresent, NotAString, UnrecognizedType }!DataType {
+    const untyped_value = type_record.get("type") orelse
+        return error.NotPresent;
+    const string_value = switch (untyped_value) {
+        .String => |val| val,
+        else => return error.NotAString,
+    };
+    return std.meta.stringToEnum(DataType, string_value) orelse
+        error.UnrecognizedType;
+}
+
+inline fn getNestedArrayChildAndCountNesting(
+    array_type_meta: *const std.json.ObjectMap,
+    depth: *usize,
+    comptime log_scope: @TypeOf(.enum_literal),
+) ?*const std.json.ObjectMap {
+    depth.* = 0;
+    var current = array_type_meta;
+    while (true) {
+        const type_or_model = getTypeOrModelRef(current, log_scope) orelse return null;
+        const data_type: DataType = switch (type_or_model) {
+            .model => return current,
+            .type => |data_type| data_type,
+        };
+        switch (data_type) {
+            .array => {
+                depth.* += 1;
+                current = switch ((current.getPtr("items") orelse return null).*) {
+                    .Object => |*next| next,
+                    else => return null,
+                };
+            },
+            .object,
+            .string,
+            .integer,
+            .number,
+            .boolean,
+            => return current,
+        }
+    }
 }
 
 inline fn writeDescriptionAsCommentIfAvailable(out_writer: anytype, relevant_object: *const std.json.ObjectMap) !void {
@@ -333,6 +238,31 @@ const RequiredSetCtx = struct {
         return std.hash_map.eqlString(a.String, b.String);
     }
 };
+
+inline fn writeArrayNestingGetChild(
+    output_writer: anytype,
+    array_type_meta: *const std.json.ObjectMap,
+    comptime log_scope: @TypeOf(.enum_literal),
+) !?struct {
+    items: *const std.json.ObjectMap,
+    kind: TypeOrModelRef,
+} {
+    const log = std.log.scoped(log_scope);
+
+    var depth: usize = 0;
+    const nested_items_record = getNestedArrayChildAndCountNesting(array_type_meta, &depth, log_scope) orelse {
+        log.err("Array type missing valid 'items' field", .{});
+        return null;
+    };
+    assert(depth > 0);
+
+    const items_kind = getTypeOrModelRef(nested_items_record, log_scope) orelse return null;
+    for (0..depth) |_| try output_writer.writeAll("[]const ");
+    return .{
+        .items = nested_items_record,
+        .kind = items_kind,
+    };
+}
 
 const RequiredSet = std.HashMap(std.json.Value, void, RequiredSetCtx, std.hash_map.default_max_load_percentage);
 inline fn writeStructTypeDef(
@@ -372,10 +302,7 @@ inline fn writeStructTypeDef(
             if (i != 0) try output_writer.writeAll(",\n");
 
             const prop: *const std.json.ObjectMap = &prop_val.Object;
-            const prop_type = switch (typeOrModelRef(prop, .default) orelse {
-                log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
-                continue;
-            }) {
+            const prop_type = if (getTypeOrModelRef(prop, .default)) |kind| switch (kind) {
                 .type => |prop_type| prop_type,
                 .model => |model_ref| {
                     try output_writer.print("    {s}: {s}{s}", .{
@@ -385,6 +312,9 @@ inline fn writeStructTypeDef(
                     });
                     continue;
                 },
+            } else {
+                log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
+                continue;
             };
 
             if (prop_type == .object) {
@@ -404,40 +334,26 @@ inline fn writeStructTypeDef(
                     continue :mainloop;
                 },
                 .array => {
-                    const items_val = prop.getPtr("items") orelse {
-                        log.err("array missing expected field 'items'", .{});
-                        try output_writer.writeAll("@compileError(\"unresolved array type\")");
-                        continue;
-                    };
-                    const items: *const std.json.ObjectMap = &items_val.Object;
-
-                    const type_or_model_ref = typeOrModelRef(items, .default) orelse {
-                        log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
-                        continue;
-                    };
-                    const items_type = switch (type_or_model_ref) {
-                        .type => |items_type| items_type,
+                    const nest_unwrapped_res = (try writeArrayNestingGetChild(output_writer, prop, log_scope)) orelse continue;
+                    const items_type = switch (nest_unwrapped_res.kind) {
+                        .type => |data_type| data_type,
                         .model => |model_ref| {
-                            try output_writer.print(
-                                "[]const {s}",
-                                .{std.zig.fmtId(std.fs.path.stem(model_ref))},
-                            );
+                            try output_writer.writeAll(std.fs.path.stem(model_ref));
                             continue;
                         },
                     };
-                    try output_writer.writeAll("[]const ");
                     switch (items_type) {
                         .object => {
                             try struct_typedef_stack_buf.appendSlice(&.{
                                 .{ .start = i + 1, .obj = current_obj },
-                                .{ .start = 0, .obj = items },
+                                .{ .start = 0, .obj = nest_unwrapped_res.items },
                             });
                             continue :mainloop;
                         },
-                        .array => @panic("TODO:"), // TODO
+                        .array => unreachable, // calling `writeArrayNestingGetChild` already handles nested array child types
                         .string => try output_writer.writeAll("u8"),
-                        .integer => try writeIntegerTypeDef(output_writer, items),
-                        .number => try writeNumberTypeDef(output_writer, prop, number_as_string),
+                        .integer => try writeIntegerTypeDef(output_writer, nest_unwrapped_res.items),
+                        .number => try writeNumberTypeDef(output_writer, nest_unwrapped_res.items, number_as_string),
                         .boolean => try output_writer.writeAll("bool"),
                     }
                 },
@@ -489,6 +405,7 @@ inline fn writeStructTypeDef(
 }
 
 inline fn writeStringTypeDef(out_writer: anytype, string_type_meta: *const std.json.ObjectMap) !void {
+    assert(std.mem.eql(u8, string_type_meta.get("type").?.String, "string"));
     const enum_list: []const std.json.Value = if (string_type_meta.get("enum")) |val| val.Array.items else {
         try out_writer.writeAll("[]const u8");
         return;
@@ -501,45 +418,15 @@ inline fn writeStringTypeDef(out_writer: anytype, string_type_meta: *const std.j
 }
 
 inline fn writeIntegerTypeDef(out_writer: anytype, int_type_meta: *const std.json.ObjectMap) !void {
-    _ = int_type_meta;
-    // log.info("int meta: {}", .{fmtJson(.{ .Object = int_type_meta.* }, .{})});
+    assert(std.mem.eql(u8, int_type_meta.get("type").?.String, "integer"));
     try out_writer.writeAll("i64");
 }
 
 inline fn writeNumberTypeDef(out_writer: anytype, num_type_meta: *const std.json.ObjectMap, num_as_string: bool) !void {
-    _ = num_type_meta;
+    assert(std.mem.eql(u8, num_type_meta.get("type").?.String, "number"));
     if (num_as_string) {
         try out_writer.writeAll(number_as_string_subst_decl_name);
     } else {
         try out_writer.writeAll("f64");
     }
 }
-
-const util = struct {
-    inline fn stripPrefix(comptime T: type, str: []const u8, prefix: []const T) ?[]const u8 {
-        if (!std.mem.startsWith(T, str, prefix)) return null;
-        return str[prefix.len..];
-    }
-
-    inline fn fmtJson(value: std.json.Value, options: std.json.StringifyOptions) FmtJson {
-        return .{
-            .value = value,
-            .options = options,
-        };
-    }
-    const FmtJson = struct {
-        value: std.json.Value,
-        options: std.json.StringifyOptions,
-
-        pub fn format(
-            self: FmtJson,
-            comptime fmt_str: []const u8,
-            options: std.fmt.FormatOptions,
-            writer: anytype,
-        ) @TypeOf(writer).Error!void {
-            _ = options;
-            if (fmt_str.len != 0) std.fmt.invalidFmtError(fmt_str, self);
-            try self.value.jsonStringify(self.options, writer);
-        }
-    };
-};
