@@ -16,15 +16,13 @@ pub fn main() !void {
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
 
-    const output_file_unbuffered = try std.fs.cwd().createFile(params.output_path, .{});
-    defer output_file_unbuffered.close();
+    const output_file = try std.fs.cwd().createFile(params.output_path, .{});
+    defer output_file.close();
 
-    var output_file = std.io.bufferedWriter(output_file_unbuffered.writer());
-    const output_writer = output_file.writer();
-    defer util.attemptFlush(&output_file, .output, .{
-        .max_retries = 3,
-    });
+    var output_buffer = std.ArrayList(u8).init(allocator);
+    defer output_buffer.deinit();
 
+    const output_writer = output_buffer.writer();
     var models_dir_contents: util.DirectoryFilesContents = blk: {
         var models_dir = try std.fs.cwd().openIterableDir(params.models, .{});
         defer models_dir.close();
@@ -129,8 +127,31 @@ pub fn main() !void {
                 try output_writer.writeAll("bool");
             },
         }
-        try output_writer.writeAll(";\n");
+        try output_writer.writeAll(";\n\n");
     }
+
+    // null terminator needed for formatting
+    try output_writer.writeByte('\x00');
+
+    var ast = try std.zig.Ast.parse(allocator, @ptrCast([:0]const u8, output_buffer.items[0 .. output_buffer.items.len - 1]), .zig);
+    defer ast.deinit(allocator);
+
+    if (ast.errors.len > 0) {
+        const stderr = std.io.getStdErr().writer();
+        try stderr.writeAll(output_buffer.items);
+        for (ast.errors) |ast_error| {
+            try stderr.print("location: {} ", .{ast.tokenLocation(0, ast_error.token)});
+            try ast.renderError(ast_error, stderr);
+            try stderr.writeByte('\n');
+        }
+
+        return error.InternalCodeGen;
+    }
+
+    const formatted = try ast.render(allocator);
+    defer allocator.free(formatted);
+
+    try output_file.writer().writeAll(formatted);
 }
 
 const DataType = enum {
@@ -370,7 +391,10 @@ inline fn writeStructTypeDef(
                         .{ util.fmtJson(default_val, .{}), @tagName(tag) },
                     ),
                     .string => |tag| switch (default_val) {
-                        .String => |val| try output_writer.print(" = \"{s}\"", .{val}),
+                        .String => |val| if (prop.contains("enum"))
+                            try output_writer.print(" = .{s}", .{std.zig.fmtId(val)})
+                        else
+                            try output_writer.print(" = \"{s}\"", .{val}),
                         else => log.err(
                             "Can't convert '{s}' to '{s}'",
                             .{ @tagName(default_val), @tagName(tag) },

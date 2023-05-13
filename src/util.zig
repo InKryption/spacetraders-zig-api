@@ -115,23 +115,6 @@ pub inline fn jsonDirectoryFilesContents(
     };
 }
 
-pub fn attemptFlush(
-    output: anytype,
-    comptime log_scope: @TypeOf(.enum_literal),
-    params: struct {
-        max_retries: u8,
-    },
-) void {
-    const log = std.log.scoped(log_scope);
-    for (0..params.max_retries) |_| {
-        output.flush() catch |err| {
-            log.warn("{s}, failed to flush output", .{@errorName(err)});
-            continue;
-        };
-        break;
-    } else log.err("Failed to flush output after {d} attempts", .{params.max_retries});
-}
-
 pub inline fn stripPrefix(comptime T: type, str: []const u8, prefix: []const T) ?[]const u8 {
     if (!std.mem.startsWith(T, str, prefix)) return null;
     return str[prefix.len..];
