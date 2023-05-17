@@ -120,6 +120,13 @@ pub inline fn stripPrefix(comptime T: type, str: []const u8, prefix: []const T) 
     return str[prefix.len..];
 }
 
+pub fn writePrefixedLines(writer: anytype, prefix: []const u8, lines: []const u8) !void {
+    var iter = std.mem.tokenize(u8, lines, "\r\n");
+    while (iter.next()) |line| {
+        try writer.print("{s}{s}", .{ prefix, line });
+    }
+}
+
 pub inline fn fmtJson(value: std.json.Value, options: std.json.StringifyOptions) FmtJson {
     return .{
         .value = value,

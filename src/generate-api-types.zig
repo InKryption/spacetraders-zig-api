@@ -7,8 +7,6 @@ const Params = @import("Params.zig");
 const number_as_string_subst_decl_name = "NumberString";
 
 pub fn main() !void {
-    const log = std.log.default;
-
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -22,7 +20,7 @@ pub fn main() !void {
     var output_buffer = std.ArrayList(u8).init(allocator);
     defer output_buffer.deinit();
 
-    const output_writer = output_buffer.writer();
+    const out_writer = output_buffer.writer();
     var models_dir_contents: util.DirectoryFilesContents = blk: {
         var models_dir = try std.fs.cwd().openIterableDir(params.models, .{});
         defer models_dir.close();
@@ -61,86 +59,43 @@ pub fn main() !void {
         }
     }
 
-    var required_set_buf = RequiredSet.init(allocator);
-    defer required_set_buf.deinit();
-
-    var struct_typedef_stack_buf = std.ArrayList(StructTypedefStackItem).init(allocator);
-    defer struct_typedef_stack_buf.deinit();
-
-    if (params.number_as_string) try output_writer.print(
+    if (params.number_as_string) try out_writer.print(
         \\/// Represents a floating point number in string representation.
         \\pub const {s} = []const u8;
         \\
     , .{number_as_string_subst_decl_name});
 
+    var render_stack = std.ArrayList(RenderStackCmd).init(allocator);
+    defer for (render_stack.items) |item| switch (item) {
+        inline .type_decl => |decl| allocator.free(decl.name),
+        else => {},
+    } else render_stack.deinit();
+
     for (models_json.keys(), models_json.values()) |model_name, *value| {
         const model_basename = std.fs.path.stem(model_name);
-        const obj: *const std.json.ObjectMap = &value.Object;
+        const json_obj: *const JsonObj = &value.Object;
 
-        const model_type = getTypeRecordFieldValue(obj) catch |err| {
-            switch (err) {
-                error.NotPresent => log.err("Top level model '{s}' missing field 'type'", .{model_name}),
-                error.NotAString => log.err("Top level model '{s}' has a field 'type', which isn't a string", .{model_name}),
-                error.UnrecognizedType => log.err("Top level model '{s}' has a field 'type' with an unrecognized value", .{model_name}),
-            }
-            continue;
-        };
-
-        try writeDescriptionAsCommentIfAvailable(output_writer, obj);
-        try output_writer.print("pub const {s} = ", .{std.zig.fmtId(model_basename)});
-        switch (model_type) {
-            .object => try writeStructTypeDef(output_writer, obj, &struct_typedef_stack_buf, &required_set_buf, params.number_as_string, .default),
-            .array => blk: {
-                const nest_unwrapped_res = (try writeArrayNestingGetChild(output_writer, obj, .default)) orelse continue;
-                const items_type = switch (nest_unwrapped_res.kind) {
-                    .type => |data_type| data_type,
-                    .model => |model_ref| {
-                        try output_writer.writeAll(std.fs.path.stem(model_ref));
-                        break :blk;
-                    },
-                };
-                switch (items_type) {
-                    .object => {
-                        try struct_typedef_stack_buf.appendSlice(&.{
-                            .{ .start = 0, .obj = nest_unwrapped_res.items },
-                        });
-                        continue;
-                    },
-                    .array => unreachable, // calling `writeArrayNestingGetChild` already handles nested array child types
-                    .string => try output_writer.writeAll("u8"),
-                    .integer => try writeIntegerTypeDef(output_writer, nest_unwrapped_res.items),
-                    .number => try writeNumberTypeDef(output_writer, nest_unwrapped_res.items, params.number_as_string),
-                    .boolean => try output_writer.writeAll("bool"),
-                }
-            },
-            .string => {
-                if (!obj.contains("enum")) log.warn(
-                    "Top level model '{s}' of type 'string' missing expected field 'enum', and will be an alias for '[]const u8'",
-                    .{model_name},
-                );
-                try writeStringTypeDef(output_writer, obj);
-            },
-            .integer => try writeIntegerTypeDef(output_writer, obj),
-            .number => try writeNumberTypeDef(output_writer, obj, params.number_as_string),
-            .boolean => {
-                log.warn("Top level model '{s}' is of type 'boolean', and thus will be an alias for 'bool'", .{model_name});
-                try output_writer.writeAll("bool");
-            },
-        }
-        try output_writer.writeAll(";\n\n");
+        render_stack.clearRetainingCapacity();
+        try render_stack.append(.{ .type_decl = .{
+            .name = try allocator.dupe(u8, model_basename),
+            .json_obj = json_obj,
+        } });
+        try renderApiType(allocator, out_writer, &render_stack, params.number_as_string, false);
     }
 
     // null terminator needed for formatting
-    try output_writer.writeByte('\x00');
+    try out_writer.writeByte('\x00');
 
-    var ast = try std.zig.Ast.parse(allocator, @ptrCast([:0]const u8, output_buffer.items[0 .. output_buffer.items.len - 1]), .zig);
+    var ast = try std.zig.Ast.parse(allocator, output_buffer.items[0 .. output_buffer.items.len - 1 :0], .zig);
     defer ast.deinit(allocator);
 
     if (ast.errors.len > 0) {
         const stderr = std.io.getStdErr().writer();
         try stderr.writeAll(output_buffer.items);
         for (ast.errors) |ast_error| {
-            try stderr.print("location: {} ", .{ast.tokenLocation(0, ast_error.token)});
+            const location = ast.tokenLocation(0, ast_error.token);
+            try stderr.print("location: {}\n", .{location});
+            try stderr.print("snippet: '{s}'\n", .{output_buffer.items[location.line_start..location.line_end]});
             try ast.renderError(ast_error, stderr);
             try stderr.writeByte('\n');
         }
@@ -154,48 +109,296 @@ pub fn main() !void {
     try output_file.writer().writeAll(formatted);
 }
 
+const JsonObj = std.json.ObjectMap;
+
 const DataType = enum {
     object,
     array,
     string,
-    integer,
     number,
+    integer,
     boolean,
 };
-const TypeOrModelRef = union(enum) {
-    model: []const u8,
-    type: DataType,
-};
-inline fn getTypeOrModelRef(
-    type_record: *const std.json.ObjectMap,
-    comptime log_scope: @TypeOf(.enum_literal),
-) ?TypeOrModelRef {
-    const log = std.log.scoped(log_scope);
-    if (type_record.get("$ref")) |model_ref_path| {
-        if (type_record.count() != 1) {
-            log.warn("Property has both a '$ref' field and other fields", .{});
-        }
-        const ref = util.stripPrefix(u8, model_ref_path.String, "./") orelse return blk: {
-            log.err("Expected relative path, got '{s}'.", .{model_ref_path.String});
-            break :blk null;
-        };
-        return .{ .model = ref };
-    }
 
-    return .{ .type = getTypeRecordFieldValue(type_record) catch |err| {
-        switch (err) {
-            error.NotPresent => log.err("Property missing expected field 'type', and also has no '$ref' field", .{}),
-            error.NotAString => log.err("Property has a field 'type' which is not a string", .{}),
-            error.UnrecognizedType => log.err("Property has a field 'type' with an unrecognized value", .{}),
+const RenderStackCmd = union(enum) {
+    type_decl: TypeDecl,
+    type_decl_end,
+    obj_def: *const JsonObj,
+    obj_def_end,
+
+    const TypeDecl = struct {
+        name: []const u8,
+        json_obj: *const JsonObj,
+    };
+};
+
+const RenderApiTypeError = error{
+    ObjectMissingPropertiesField,
+    NonObjectPropertiesField,
+    NonArrayItemsField,
+    TooManyRequiredFields,
+    NonObjectProperty,
+    DefaultValueTypeMismatch,
+} || std.mem.Allocator.Error ||
+    GetRefFieldValueError ||
+    GetTypeFieldValueError ||
+    GetNestedArrayChildError ||
+    WriteDescriptionAsCommentIfAvailableError;
+
+fn renderApiType(
+    allocator: std.mem.Allocator,
+    out_writer: anytype,
+    render_stack: *std.ArrayList(RenderStackCmd),
+    number_as_string: bool,
+    comptime print_json_as_comment: bool,
+) (@TypeOf(out_writer).Error || RenderApiTypeError)!void {
+    var json_comment_buf = if (print_json_as_comment) std.ArrayList(u8).init(allocator);
+    defer if (print_json_as_comment) json_comment_buf.deinit();
+
+    while (true) {
+        const current: RenderStackCmd = render_stack.popOrNull() orelse return;
+        switch (current) {
+            .type_decl => |decl| {
+                defer allocator.free(decl.name);
+
+                if (print_json_as_comment) {
+                    json_comment_buf.clearRetainingCapacity();
+                    try json_comment_buf.writer().print("{}", .{util.fmtJson(
+                        .{ .Object = decl.json_obj.* },
+                        std.json.StringifyOptions{ .whitespace = .{ .indent = .Tab } },
+                    )});
+                    try util.writePrefixedLines(out_writer, "\n// ", json_comment_buf.items);
+                    try out_writer.writeAll("\n");
+                }
+
+                try writeDescriptionAsCommentIfAvailable(out_writer, decl.json_obj);
+                try out_writer.print("pub const {s} = ", .{std.zig.fmtId(decl.name)});
+
+                assert((getRefFieldValue(decl.json_obj) catch unreachable) == null); // I believe there's no logic that would lead to this
+                switch (try getTypeFieldValue(decl.json_obj)) {
+                    .object => {
+                        try render_stack.append(.type_decl_end);
+                        try render_stack.append(.{ .obj_def = decl.json_obj });
+                        continue;
+                    },
+                    .array => @panic("TODO: consider top level array type aliases"),
+                    .string => {
+                        if (!isEnumStringTypeDef(decl.json_obj)) {
+                            try out_writer.writeAll("[]const u8");
+                        } else {
+                            try writeStringEnumTypeDef(out_writer, decl.json_obj);
+                        }
+                    },
+                    inline .number, .integer, .boolean => |tag| {
+                        switch (tag) {
+                            .number => try writeNumberTypeDef(out_writer, decl.json_obj, number_as_string),
+                            .integer => try writeIntegerTypeDef(out_writer, decl.json_obj),
+                            .boolean => try writeBooleanTypeDef(out_writer),
+                            else => comptime unreachable,
+                        }
+                    },
+                }
+                try out_writer.writeAll(";\n\n");
+            },
+            .type_decl_end => try out_writer.writeAll(";\n\n"),
+            .obj_def => |obj| {
+                try out_writer.writeAll("struct {\n");
+                render_stack.appendAssumeCapacity(.obj_def_end); // we just popped so we can assume there's capacity
+
+                const properties: *const JsonObj = if (obj.getPtr("properties")) |val| switch (val.*) {
+                    .Object => |*properties| properties,
+                    else => return error.NonObjectPropertiesField,
+                } else return error.ObjectMissingPropertiesField;
+
+                const required: []const std.json.Value = if (obj.get("required")) |val| switch (val) {
+                    .Array => |array| array.items,
+                    else => return error.NonArrayItemsField,
+                } else &.{};
+
+                if (properties.count() < required.len) {
+                    return error.TooManyRequiredFields;
+                }
+
+                try render_stack.ensureUnusedCapacity(properties.count());
+                const prop_cmd_insert_start = render_stack.items.len;
+
+                for (properties.keys(), properties.values()) |prop_name, *prop_val| {
+                    const prop: *const JsonObj = switch (prop_val.*) {
+                        .Object => |*prop| prop,
+                        else => return error.NonObjectProperty,
+                    };
+                    const default_val = prop.get("default");
+
+                    const is_required = for (required) |req| {
+                        if (std.mem.eql(u8, prop_name, req.String)) break true;
+                    } else false;
+
+                    if (try getRefFieldValue(prop)) |ref| {
+                        try writeDescriptionAsCommentIfAvailable(out_writer, prop);
+                        const name = modelRefToName(ref);
+
+                        if (default_val != null) { // TODO: hate. how would I even implement this as-is. Probably need to make the model json data accessible here
+                            std.log.err("Encountered default value for $ref'd field", .{});
+                        }
+
+                        try out_writer.print("{s}: {s}{s},\n", .{
+                            std.zig.fmtId(prop_name),
+                            if (is_required) "" else "?",
+                            std.zig.fmtId(name),
+                        });
+                        continue;
+                    }
+
+                    switch (try getTypeFieldValue(prop)) {
+                        .object => {
+                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                                &[1]u8{std.ascii.toUpper(prop_name[0])},
+                                prop_name[1..],
+                            });
+                            errdefer allocator.free(new_decl_name);
+
+                            render_stack.insertAssumeCapacity(prop_cmd_insert_start, .{ .type_decl = .{
+                                .name = new_decl_name,
+                                .json_obj = prop,
+                            } });
+
+                            try out_writer.print("{s}: {s}{s}", .{
+                                std.zig.fmtId(prop_name),
+                                if (is_required) "" else "?",
+                                std.zig.fmtId(new_decl_name),
+                            });
+                            // TODO: implement this?
+                            if (default_val != null) {
+                                std.log.err("Encountered default value for object", .{});
+                            }
+                        },
+                        .array => {
+                            try writeDescriptionAsCommentIfAvailable(out_writer, prop);
+                            try out_writer.print("{s}: {s}", .{
+                                std.zig.fmtId(prop_name),
+                                if (is_required) "" else "?",
+                            });
+
+                            var depth: usize = 0;
+                            const items = try getNestedArrayChild(prop, &depth);
+                            try out_writer.writeAll("[]const ");
+                            for (0..depth) |_| try out_writer.writeAll("[]const ");
+
+                            if (try getRefFieldValue(items)) |ref| {
+                                const name = modelRefToName(ref);
+                                try out_writer.print("{s},\n", .{std.zig.fmtId(name)});
+                                continue;
+                            }
+
+                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                                &[1]u8{std.ascii.toUpper(prop_name[0])},
+                                prop_name[1..],
+                                "Item",
+                            });
+                            errdefer allocator.free(new_decl_name);
+
+                            render_stack.appendAssumeCapacity(.{ .type_decl = .{
+                                .name = new_decl_name,
+                                .json_obj = items,
+                            } });
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+                        },
+                        .string => {
+                            if (!isEnumStringTypeDef(prop)) {
+                                try writeDescriptionAsCommentIfAvailable(out_writer, prop);
+                                try out_writer.print("{s}: {s}[]const u8,\n", .{
+                                    std.zig.fmtId(prop_name),
+                                    if (is_required) "" else "?",
+                                });
+                                continue;
+                            }
+
+                            try out_writer.print("{s}: {s}", .{
+                                std.zig.fmtId(prop_name),
+                                if (is_required) "" else "?",
+                            });
+
+                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                                &[1]u8{std.ascii.toUpper(prop_name[0])},
+                                prop_name[1..],
+                            });
+                            errdefer allocator.free(new_decl_name);
+
+                            render_stack.appendAssumeCapacity(.{ .type_decl = .{
+                                .name = new_decl_name,
+                                .json_obj = prop,
+                            } });
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+                            if (default_val) |val| {
+                                try out_writer.writeAll(" = ");
+                                switch (val) {
+                                    .String => |str| {
+                                        for (prop.get("enum").?.Array.items) |enum_val| {
+                                            if (std.mem.eql(u8, enum_val.String, str)) break;
+                                        } else return error.DefaultValueTypeMismatch;
+                                        try out_writer.print(".{s}", .{std.zig.fmtId(str)});
+                                    },
+                                    else => return error.DefaultValueTypeMismatch,
+                                }
+                            }
+                        },
+                        inline .number, .integer, .boolean => |tag| {
+                            try writeDescriptionAsCommentIfAvailable(out_writer, prop);
+                            try out_writer.print("{s}: {s}", .{
+                                std.zig.fmtId(prop_name),
+                                if (is_required) "" else "?",
+                            });
+                            switch (tag) {
+                                .number => try writeNumberTypeDef(out_writer, prop, number_as_string),
+                                .integer => try writeIntegerTypeDef(out_writer, prop),
+                                .boolean => {
+                                    try writeBooleanTypeDef(out_writer);
+                                    if (default_val) |val| switch (val) {
+                                        .Bool => |boolean_val| try out_writer.print("= {}", .{boolean_val}),
+                                        else => return error.DefaultValueTypeMismatch,
+                                    };
+                                },
+                                else => comptime unreachable,
+                            }
+                            if (default_val != null and tag != .boolean) {
+                                std.log.err("Encountered default value for '{s}' type", .{@tagName(tag)});
+                            }
+                        },
+                    }
+                    try out_writer.writeAll(",\n");
+                }
+            },
+            .obj_def_end => try out_writer.writeAll("}"),
         }
-        return null;
-    } };
+    }
 }
 
-inline fn getTypeRecordFieldValue(
-    type_record: *const std.json.ObjectMap,
-) error{ NotPresent, NotAString, UnrecognizedType }!DataType {
-    const untyped_value = type_record.get("type") orelse
+inline fn modelRefToName(ref: []const u8) []const u8 {
+    const file_name = util.stripPrefix(u8, ref, "./") orelse ref;
+    return std.fs.path.stem(file_name);
+}
+
+const GetRefFieldValueError = error{
+    NotAlone,
+    NotAString,
+};
+fn getRefFieldValue(json_obj: *const JsonObj) GetRefFieldValueError!?[]const u8 {
+    const val = json_obj.get("$ref") orelse return null;
+    if (json_obj.count() != 1) return error.NotAlone;
+    const str = switch (val) {
+        .String => |str| str,
+        else => return error.NotAString,
+    };
+    return str;
+}
+
+const GetTypeFieldValueError = error{
+    NotPresent,
+    NotAString,
+    UnrecognizedType,
+};
+fn getTypeFieldValue(json_obj: *const JsonObj) GetTypeFieldValueError!DataType {
+    const untyped_value = json_obj.get("type") orelse
         return error.NotPresent;
     const string_value = switch (untyped_value) {
         .String => |val| val,
@@ -205,252 +408,88 @@ inline fn getTypeRecordFieldValue(
         error.UnrecognizedType;
 }
 
-inline fn getNestedArrayChildAndCountNesting(
-    array_type_meta: *const std.json.ObjectMap,
-    depth: *usize,
-    comptime log_scope: @TypeOf(.enum_literal),
-) ?*const std.json.ObjectMap {
+const GetNestedArrayChildError = error{
+    NoItemsField,
+    NonObjectItemsField,
+} || GetRefFieldValueError || GetTypeFieldValueError;
+fn getNestedArrayChild(json_obj: *const JsonObj, depth: *usize) GetNestedArrayChildError!*const JsonObj {
     depth.* = 0;
-    var current = array_type_meta;
+
+    var current = json_obj;
     while (true) {
-        const type_or_model = getTypeOrModelRef(current, log_scope) orelse return null;
-        const data_type: DataType = switch (type_or_model) {
-            .model => return current,
-            .type => |data_type| data_type,
-        };
-        switch (data_type) {
+        const items = if (current.getPtr("items")) |val| switch (val.*) {
+            .Object => |*obj| obj,
+            else => return error.NonObjectItemsField,
+        } else return error.NoItemsField;
+
+        if ((try getRefFieldValue(items)) != null) {
+            return items;
+        }
+        switch (try getTypeFieldValue(items)) {
             .array => {
                 depth.* += 1;
-                current = switch ((current.getPtr("items") orelse return null).*) {
-                    .Object => |*next| next,
-                    else => return null,
-                };
+                current = items;
             },
             .object,
             .string,
             .integer,
             .number,
             .boolean,
-            => return current,
+            => return items,
         }
     }
 }
 
-inline fn writeDescriptionAsCommentIfAvailable(out_writer: anytype, relevant_object: *const std.json.ObjectMap) !void {
-    const desc = if (relevant_object.get("description")) |desc_val| desc_val.String else return;
+inline fn isEnumStringTypeDef(json_obj: *const JsonObj) bool {
+    assert(std.mem.eql(u8, json_obj.get("type").?.String, "string"));
+    return json_obj.contains("enum");
+}
+
+const WriteDescriptionAsCommentIfAvailableError = error{
+    NonStringDescriptionValue,
+} || GetRefFieldValueError;
+inline fn writeDescriptionAsCommentIfAvailable(
+    out_writer: anytype,
+    json_obj: *const JsonObj,
+) (@TypeOf(out_writer).Error || WriteDescriptionAsCommentIfAvailableError)!void {
+    if ((try getRefFieldValue(json_obj)) != null) return;
+    const desc_val = json_obj.get("description") orelse return;
+    const desc = switch (desc_val) {
+        .String => |str| str,
+        else => return error.NonStringDescriptionValue,
+    };
     if (desc.len == 0) return;
-    var line_it = std.mem.tokenize(u8, desc, "\r\n");
-    while (line_it.next()) |line| {
-        try out_writer.print("/// {s}\n", .{line});
-    }
+    try util.writePrefixedLines(out_writer, "/// ", desc);
+    try out_writer.writeAll("\n");
 }
 
-const StructTypedefStackItem = struct {
-    start: usize,
-    obj: *const std.json.ObjectMap,
-};
-const RequiredSetCtx = struct {
-    pub fn hash(ctx: @This(), key: std.json.Value) u64 {
-        _ = ctx;
-        return std.hash_map.hashString(key.String);
-    }
-    pub fn eql(ctx: @This(), a: std.json.Value, b: std.json.Value) bool {
-        _ = ctx;
-        return std.hash_map.eqlString(a.String, b.String);
-    }
-};
-
-inline fn writeArrayNestingGetChild(
-    output_writer: anytype,
-    array_type_meta: *const std.json.ObjectMap,
-    comptime log_scope: @TypeOf(.enum_literal),
-) !?struct {
-    items: *const std.json.ObjectMap,
-    kind: TypeOrModelRef,
-} {
-    const log = std.log.scoped(log_scope);
-
-    var depth: usize = 0;
-    const nested_items_record = getNestedArrayChildAndCountNesting(array_type_meta, &depth, log_scope) orelse {
-        log.err("Array type missing valid 'items' field", .{});
-        return null;
-    };
-    assert(depth > 0);
-
-    const items_kind = getTypeOrModelRef(nested_items_record, log_scope) orelse return null;
-    for (0..depth) |_| try output_writer.writeAll("[]const ");
-    return .{
-        .items = nested_items_record,
-        .kind = items_kind,
-    };
-}
-
-const RequiredSet = std.HashMap(std.json.Value, void, RequiredSetCtx, std.hash_map.default_max_load_percentage);
-inline fn writeStructTypeDef(
-    output_writer: anytype,
-    record_type_meta: *const std.json.ObjectMap,
-    struct_typedef_stack_buf: *std.ArrayList(StructTypedefStackItem),
-    required_set_buf: *RequiredSet,
-    number_as_string: bool,
-    comptime log_scope: @TypeOf(.enum_literal),
-) !void {
-    const log = std.log.scoped(log_scope);
-
-    try struct_typedef_stack_buf.append(.{
-        .start = 0,
-        .obj = record_type_meta,
-    });
-
-    mainloop: while (struct_typedef_stack_buf.popOrNull()) |stack_item| {
-        const start: usize = stack_item.start;
-        const current_obj: *const std.json.ObjectMap = stack_item.obj;
-        const properties_obj: *const std.json.ObjectMap = if (current_obj.getPtr("properties")) |val| &val.Object else {
-            log.err("'object' missing expected field 'properties'", .{});
-            return;
-        };
-
-        required_set_buf.clearRetainingCapacity();
-        if (current_obj.get("required")) |list_val| {
-            for (list_val.Array.items) |val| {
-                try required_set_buf.putNoClobber(val, {});
-            }
-        }
-
-        if (start == 0) try output_writer.writeAll("struct {");
-        if (properties_obj.count() - start > 0) try output_writer.writeAll("\n");
-
-        for (properties_obj.keys()[start..], properties_obj.values()[start..], start..) |prop_name, *prop_val, i| {
-            if (i != 0) try output_writer.writeAll(",\n");
-
-            const prop: *const std.json.ObjectMap = &prop_val.Object;
-            const prop_type = if (getTypeOrModelRef(prop, .default)) |kind| switch (kind) {
-                .type => |prop_type| prop_type,
-                .model => |model_ref| {
-                    try output_writer.print("    {s}: {s}{s}", .{
-                        std.zig.fmtId(prop_name),
-                        if (!required_set_buf.contains(.{ .String = prop_name })) "?" else "",
-                        std.zig.fmtId(std.fs.path.stem(model_ref)),
-                    });
-                    continue;
-                },
-            } else {
-                log.err("Property '{s}' missing expected field 'type', and also has no '$ref' field.", .{prop_name});
-                continue;
-            };
-
-            if (prop_type == .object) {
-                try writeDescriptionAsCommentIfAvailable(output_writer, prop);
-            }
-            try output_writer.print("    {s}: ", .{std.zig.fmtId(prop_name)});
-
-            if (!required_set_buf.contains(std.json.Value{ .String = prop_name })) {
-                try output_writer.writeAll("?");
-            }
-            switch (prop_type) {
-                .object => {
-                    try struct_typedef_stack_buf.appendSlice(&.{
-                        .{ .start = i + 1, .obj = current_obj },
-                        .{ .start = 0, .obj = prop },
-                    });
-                    continue :mainloop;
-                },
-                .array => {
-                    const nest_unwrapped_res = (try writeArrayNestingGetChild(output_writer, prop, log_scope)) orelse continue;
-                    const items_type = switch (nest_unwrapped_res.kind) {
-                        .type => |data_type| data_type,
-                        .model => |model_ref| {
-                            try output_writer.writeAll(std.fs.path.stem(model_ref));
-                            continue;
-                        },
-                    };
-                    switch (items_type) {
-                        .object => {
-                            try struct_typedef_stack_buf.appendSlice(&.{
-                                .{ .start = i + 1, .obj = current_obj },
-                                .{ .start = 0, .obj = nest_unwrapped_res.items },
-                            });
-                            continue :mainloop;
-                        },
-                        .array => unreachable, // calling `writeArrayNestingGetChild` already handles nested array child types
-                        .string => try output_writer.writeAll("u8"),
-                        .integer => try writeIntegerTypeDef(output_writer, nest_unwrapped_res.items),
-                        .number => try writeNumberTypeDef(output_writer, nest_unwrapped_res.items, number_as_string),
-                        .boolean => try output_writer.writeAll("bool"),
-                    }
-                },
-                .string => try writeStringTypeDef(output_writer, prop),
-                .integer => try writeIntegerTypeDef(output_writer, prop),
-                .number => try writeNumberTypeDef(output_writer, prop, number_as_string),
-                .boolean => try output_writer.writeAll("bool"),
-            }
-
-            if (prop.get("default")) |default_val| {
-                switch (prop_type) {
-                    .object, .array => |tag| log.err(
-                        "Default value '{}' for type '{s}' unhandled",
-                        .{ util.fmtJson(default_val, .{}), @tagName(tag) },
-                    ),
-                    .string => |tag| switch (default_val) {
-                        .String => |val| if (prop.contains("enum"))
-                            try output_writer.print(" = .{s}", .{std.zig.fmtId(val)})
-                        else
-                            try output_writer.print(" = \"{s}\"", .{val}),
-                        else => log.err(
-                            "Can't convert '{s}' to '{s}'",
-                            .{ @tagName(default_val), @tagName(tag) },
-                        ),
-                    },
-                    .integer,
-                    .number,
-                    => |tag| switch (default_val) {
-                        .NumberString => |val| try output_writer.print(" = {s}", .{val}),
-                        .Integer => |val| try output_writer.print(" = {d}", .{val}),
-                        .Float => |val| try output_writer.print(" = {d}", .{val}),
-                        else => log.err(
-                            "Can't convert '{s}' to '{s}'",
-                            .{ @tagName(default_val), @tagName(tag) },
-                        ),
-                    },
-                    .boolean => |tag| switch (default_val) {
-                        .Bool => |val| try output_writer.print(" = {}", .{val}),
-                        else => log.err(
-                            "Can't convert '{s}' to '{s}'",
-                            .{ @tagName(default_val), @tagName(tag) },
-                        ),
-                    },
-                }
-            }
-        }
-        if (properties_obj.count() > 0) {
-            try output_writer.writeAll(",\n");
-        }
-        try output_writer.writeAll("}");
-    }
-}
-
-inline fn writeStringTypeDef(out_writer: anytype, string_type_meta: *const std.json.ObjectMap) !void {
-    assert(std.mem.eql(u8, string_type_meta.get("type").?.String, "string"));
-    const enum_list: []const std.json.Value = if (string_type_meta.get("enum")) |val| val.Array.items else {
-        try out_writer.writeAll("[]const u8");
-        return;
-    };
+fn writeStringEnumTypeDef(out_writer: anytype, json_obj: *const JsonObj) !void {
+    assert(std.mem.eql(u8, json_obj.get("type").?.String, "string"));
+    const enum_list: []const std.json.Value = json_obj.get("enum").?.Array.items;
     try out_writer.writeAll("enum {\n");
     for (enum_list) |val| {
-        try out_writer.print("    {s},\n", .{val.String});
+        try out_writer.print("{s},\n", .{val.String});
     }
     try out_writer.writeAll("}");
 }
 
-inline fn writeIntegerTypeDef(out_writer: anytype, int_type_meta: *const std.json.ObjectMap) !void {
-    assert(std.mem.eql(u8, int_type_meta.get("type").?.String, "integer"));
-    try out_writer.writeAll("i64");
-}
-
-inline fn writeNumberTypeDef(out_writer: anytype, num_type_meta: *const std.json.ObjectMap, num_as_string: bool) !void {
-    assert(std.mem.eql(u8, num_type_meta.get("type").?.String, "number"));
-    if (num_as_string) {
+fn writeNumberTypeDef(out_writer: anytype, json_obj: *const JsonObj, number_as_string: bool) !void {
+    // TODO: handle other parts of integer information (min/max/format)
+    assert(std.mem.eql(u8, json_obj.get("type").?.String, "number"));
+    if (number_as_string) {
         try out_writer.writeAll(number_as_string_subst_decl_name);
     } else {
         try out_writer.writeAll("f64");
     }
+}
+
+fn writeIntegerTypeDef(out_writer: anytype, json_obj: *const JsonObj) !void {
+    // TODO: handle other parts of integer information (min/max/format)
+    assert(std.mem.eql(u8, json_obj.get("type").?.String, "integer"));
+    try out_writer.writeAll("i64");
+}
+
+inline fn writeBooleanTypeDef(out_writer: anytype) !void {
+    // TODO: are there edge cases to this?
+    try out_writer.writeAll("bool");
 }

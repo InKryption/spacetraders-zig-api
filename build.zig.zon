@@ -3,8 +3,8 @@
     .version = "0.0.1",
     .dependencies = .{
         .apidocs = .{
-            .url = "https://github.com/InKryption/api-docs/archive/07039cd6e4d94e8c552b5c0167d706d976315061.tar.gz",
-            .hash = "1220f2ccfab25bb8a40dd3e6df2f62e1b6b7c7e92b4fb16a71edf121af95099918ce",
+            .url = "https://github.com/InKryption/api-docs/archive/161a2da7fd78414e9af3f7c572541790e1a5f746.tar.gz",
+            .hash = "12206a8777ccb08d22242d5511c3f632394edf530a6505c36213ae5555ace400173a",
         },
     },
 }
