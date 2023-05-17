@@ -80,7 +80,7 @@ pub fn main() !void {
             .name = try allocator.dupe(u8, model_basename),
             .json_obj = json_obj,
         } });
-        try renderApiType(allocator, out_writer, &render_stack, params.number_as_string, false);
+        try renderApiType(allocator, out_writer, &render_stack, params.number_as_string, true);
     }
 
     // null terminator needed for formatting
@@ -136,6 +136,8 @@ const RenderApiTypeError = error{
     ObjectMissingPropertiesField,
     NonObjectPropertiesField,
     NonArrayItemsField,
+    NonArrayEnumField,
+    NonStringEnumFieldElement,
     TooManyRequiredFields,
     NonObjectProperty,
     DefaultValueTypeMismatch,
@@ -182,14 +184,8 @@ fn renderApiType(
                         continue;
                     },
                     .array => @panic("TODO: consider top level array type aliases"),
-                    .string => {
-                        if (!isEnumStringTypeDef(decl.json_obj)) {
-                            try out_writer.writeAll("[]const u8");
-                        } else {
-                            try writeStringEnumTypeDef(out_writer, decl.json_obj);
-                        }
-                    },
                     inline //
+                    .string,
                     .number,
                     .integer,
                     .boolean,
@@ -198,6 +194,7 @@ fn renderApiType(
                 try out_writer.writeAll(";\n\n");
             },
             .type_decl_end => try out_writer.writeAll(";\n\n"),
+
             .obj_def => |obj| {
                 try out_writer.writeAll("struct {\n");
                 render_stack.appendAssumeCapacity(.obj_def_end); // we just popped so we can assume there's capacity
@@ -248,7 +245,7 @@ fn renderApiType(
 
                     switch (try getTypeFieldValue(prop)) {
                         .object => {
-                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                            const new_decl_name = try std.mem.concat(allocator, u8, &.{
                                 &[1]u8{std.ascii.toUpper(prop_name[0])},
                                 prop_name[1..],
                             });
@@ -287,7 +284,7 @@ fn renderApiType(
                                 continue;
                             }
 
-                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                            const new_decl_name = try std.mem.concat(allocator, u8, &.{
                                 &[1]u8{std.ascii.toUpper(prop_name[0])},
                                 prop_name[1..],
                                 "Item",
@@ -301,21 +298,30 @@ fn renderApiType(
                             try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
                         },
                         .string => {
-                            if (!isEnumStringTypeDef(prop)) {
+                            const enum_list_val = prop.get("enum") orelse {
                                 try writeDescriptionAsCommentIfAvailable(out_writer, prop);
-                                try out_writer.print("{s}: {s}[]const u8,\n", .{
+                                try out_writer.print("{s}: {s}[]const u8", .{
                                     std.zig.fmtId(prop_name),
                                     if (is_required) "" else "?",
                                 });
+                                if (default_val) |val| switch (val) {
+                                    .String => |str| try out_writer.print(" = \"{s}\"", .{str}),
+                                    else => return error.DefaultValueTypeMismatch,
+                                };
+                                try out_writer.writeAll(",\n");
                                 continue;
+                            };
+                            const enum_list: []const std.json.Value = switch (enum_list_val) {
+                                .Array => |array| array.items,
+                                else => return error.NonArrayEnumField,
+                            };
+                            for (enum_list) |val| {
+                                if (val != .String) {
+                                    return error.NonStringEnumFieldElement;
+                                }
                             }
 
-                            try out_writer.print("{s}: {s}", .{
-                                std.zig.fmtId(prop_name),
-                                if (is_required) "" else "?",
-                            });
-
-                            const new_decl_name = try std.mem.concat(allocator, u8, &[_][]const u8{
+                            const new_decl_name = try std.mem.concat(allocator, u8, &.{
                                 &[1]u8{std.ascii.toUpper(prop_name[0])},
                                 prop_name[1..],
                             });
@@ -325,19 +331,21 @@ fn renderApiType(
                                 .name = new_decl_name,
                                 .json_obj = prop,
                             } });
-                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
-                            if (default_val) |val| {
-                                try out_writer.writeAll(" = ");
-                                switch (val) {
-                                    .String => |str| {
-                                        for (prop.get("enum").?.Array.items) |enum_val| {
-                                            if (std.mem.eql(u8, enum_val.String, str)) break;
-                                        } else return error.DefaultValueTypeMismatch;
-                                        try out_writer.print(".{s}", .{std.zig.fmtId(str)});
-                                    },
-                                    else => return error.DefaultValueTypeMismatch,
-                                }
-                            }
+
+                            try out_writer.print("{s}: {s}{s}", .{
+                                std.zig.fmtId(prop_name),
+                                if (is_required) "" else "?",
+                                std.zig.fmtId(new_decl_name),
+                            });
+
+                            if (default_val) |val| switch (val) {
+                                .String => |str| for (enum_list) |enum_val| {
+                                    if (!std.mem.eql(u8, enum_val.String, str)) continue;
+                                    try out_writer.print(" = .{s}", .{std.zig.fmtId(str)});
+                                    break;
+                                } else return error.DefaultValueTypeMismatch,
+                                else => return error.DefaultValueTypeMismatch,
+                            };
                         },
                         inline .number, .integer, .boolean => |tag| {
                             try writeDescriptionAsCommentIfAvailable(out_writer, prop);
@@ -345,19 +353,29 @@ fn renderApiType(
                                 std.zig.fmtId(prop_name),
                                 if (is_required) "" else "?",
                             });
+
                             try writeSimpleType(out_writer, tag, prop, number_as_string);
-                            if (default_val) |val| switch (val) {
-                                .Bool => |boolean_val| if (tag != .boolean)
-                                    return error.DefaultValueTypeMismatch
-                                else
-                                    try out_writer.print(" = {}", .{boolean_val}),
-                                else => return error.DefaultValueTypeMismatch,
-                            };
+                            if (default_val) |val| {
+                                switch (tag) {
+                                    .number, .integer => switch (val) {
+                                        .Integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
+                                        .Float => |float_val| try out_writer.print(" = {d}", .{float_val}),
+                                        .NumberString => |num_str_val| try out_writer.print(" = {s}", .{num_str_val}),
+                                        else => return error.DefaultValueTypeMismatch,
+                                    },
+                                    .boolean => switch (val) {
+                                        .Bool => |bool_val| try out_writer.print(" = {}", .{bool_val}),
+                                        else => return error.DefaultValueTypeMismatch,
+                                    },
+                                    else => comptime unreachable,
+                                }
+                            }
                         },
                     }
                     try out_writer.writeAll(",\n");
                 }
             },
+
             .obj_def_end => try out_writer.writeAll("}"),
         }
     }
@@ -370,9 +388,41 @@ fn writeSimpleType(
     number_as_string: bool,
 ) !void {
     switch (tag) {
-        .number => try writeNumberTypeDef(out_writer, json_obj, number_as_string),
-        .integer => try writeIntegerTypeDef(out_writer, json_obj),
-        .boolean => try writeBooleanTypeDef(out_writer),
+        .string => {
+            const enum_list_val = json_obj.get("enum") orelse {
+                try out_writer.writeAll("[]const u8");
+                return;
+            };
+            const enum_list: []const std.json.Value = switch (enum_list_val) {
+                .Array => |array| array.items,
+                else => return error.NonArrayEnumField,
+            };
+            try out_writer.writeAll("enum {\n");
+            for (enum_list) |val| {
+                const str = switch (val) {
+                    .String => |str| str,
+                    else => return error.NonStringEnumFieldElement,
+                };
+                try out_writer.print("{s},\n", .{std.zig.fmtId(str)});
+            }
+            try out_writer.writeAll("}");
+        },
+        .number => {
+            // TODO: handle other parts of number information (min/max/format)
+            if (number_as_string) {
+                try out_writer.writeAll(number_as_string_subst_decl_name);
+            } else {
+                try out_writer.writeAll("f64");
+            }
+        },
+        .integer => {
+            // TODO: handle other parts of integer information (min/max/format)
+            try out_writer.writeAll("i64");
+        },
+        .boolean => {
+            // TODO: are there edge cases to this?
+            try out_writer.writeAll("bool");
+        },
         else => comptime unreachable,
     }
 }
@@ -444,11 +494,6 @@ fn getNestedArrayChild(json_obj: *const JsonObj, depth: *usize) GetNestedArrayCh
     }
 }
 
-inline fn isEnumStringTypeDef(json_obj: *const JsonObj) bool {
-    assert(std.mem.eql(u8, json_obj.get("type").?.String, "string"));
-    return json_obj.contains("enum");
-}
-
 const WriteDescriptionAsCommentIfAvailableError = error{
     NonStringDescriptionValue,
 } || GetRefFieldValueError;
@@ -465,35 +510,4 @@ inline fn writeDescriptionAsCommentIfAvailable(
     if (desc.len == 0) return;
     try util.writePrefixedLines(out_writer, "/// ", desc);
     try out_writer.writeAll("\n");
-}
-
-fn writeStringEnumTypeDef(out_writer: anytype, json_obj: *const JsonObj) !void {
-    assert(std.mem.eql(u8, json_obj.get("type").?.String, "string"));
-    const enum_list: []const std.json.Value = json_obj.get("enum").?.Array.items;
-    try out_writer.writeAll("enum {\n");
-    for (enum_list) |val| {
-        try out_writer.print("{s},\n", .{val.String});
-    }
-    try out_writer.writeAll("}");
-}
-
-fn writeNumberTypeDef(out_writer: anytype, json_obj: *const JsonObj, number_as_string: bool) !void {
-    // TODO: handle other parts of integer information (min/max/format)
-    assert(std.mem.eql(u8, json_obj.get("type").?.String, "number"));
-    if (number_as_string) {
-        try out_writer.writeAll(number_as_string_subst_decl_name);
-    } else {
-        try out_writer.writeAll("f64");
-    }
-}
-
-fn writeIntegerTypeDef(out_writer: anytype, json_obj: *const JsonObj) !void {
-    // TODO: handle other parts of integer information (min/max/format)
-    assert(std.mem.eql(u8, json_obj.get("type").?.String, "integer"));
-    try out_writer.writeAll("i64");
-}
-
-inline fn writeBooleanTypeDef(out_writer: anytype) !void {
-    // TODO: are there edge cases to this?
-    try out_writer.writeAll("bool");
 }
