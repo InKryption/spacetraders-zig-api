@@ -189,14 +189,11 @@ fn renderApiType(
                             try writeStringEnumTypeDef(out_writer, decl.json_obj);
                         }
                     },
-                    inline .number, .integer, .boolean => |tag| {
-                        switch (tag) {
-                            .number => try writeNumberTypeDef(out_writer, decl.json_obj, number_as_string),
-                            .integer => try writeIntegerTypeDef(out_writer, decl.json_obj),
-                            .boolean => try writeBooleanTypeDef(out_writer),
-                            else => comptime unreachable,
-                        }
-                    },
+                    inline //
+                    .number,
+                    .integer,
+                    .boolean,
+                    => |tag| try writeSimpleType(out_writer, tag, decl.json_obj, number_as_string),
                 }
                 try out_writer.writeAll(";\n\n");
             },
@@ -348,21 +345,14 @@ fn renderApiType(
                                 std.zig.fmtId(prop_name),
                                 if (is_required) "" else "?",
                             });
-                            switch (tag) {
-                                .number => try writeNumberTypeDef(out_writer, prop, number_as_string),
-                                .integer => try writeIntegerTypeDef(out_writer, prop),
-                                .boolean => {
-                                    try writeBooleanTypeDef(out_writer);
-                                    if (default_val) |val| switch (val) {
-                                        .Bool => |boolean_val| try out_writer.print("= {}", .{boolean_val}),
-                                        else => return error.DefaultValueTypeMismatch,
-                                    };
-                                },
-                                else => comptime unreachable,
-                            }
-                            if (default_val != null and tag != .boolean) {
-                                std.log.err("Encountered default value for '{s}' type", .{@tagName(tag)});
-                            }
+                            try writeSimpleType(out_writer, tag, prop, number_as_string);
+                            if (default_val) |val| switch (val) {
+                                .Bool => |boolean_val| if (tag != .boolean)
+                                    return error.DefaultValueTypeMismatch
+                                else
+                                    try out_writer.print(" = {}", .{boolean_val}),
+                                else => return error.DefaultValueTypeMismatch,
+                            };
                         },
                     }
                     try out_writer.writeAll(",\n");
@@ -370,6 +360,20 @@ fn renderApiType(
             },
             .obj_def_end => try out_writer.writeAll("}"),
         }
+    }
+}
+
+fn writeSimpleType(
+    out_writer: anytype,
+    comptime tag: DataType,
+    json_obj: *const JsonObj,
+    number_as_string: bool,
+) !void {
+    switch (tag) {
+        .number => try writeNumberTypeDef(out_writer, json_obj, number_as_string),
+        .integer => try writeIntegerTypeDef(out_writer, json_obj),
+        .boolean => try writeBooleanTypeDef(out_writer),
+        else => comptime unreachable,
     }
 }
 
