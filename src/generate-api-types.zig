@@ -243,7 +243,25 @@ fn renderApiType(
                         continue;
                     }
 
-                    switch (try getTypeFieldValue(prop)) {
+                    const data_type = try getTypeFieldValue(prop);
+
+                    switch (data_type) {
+                        .object => {},
+
+                        .number,
+                        .integer,
+                        .boolean,
+                        .array,
+                        => try writeDescriptionAsCommentIfAvailable(out_writer, prop),
+
+                        .string => if (!prop.contains("enum")) {
+                            try writeDescriptionAsCommentIfAvailable(out_writer, prop);
+                        },
+                    }
+
+                    try out_writer.print("{s}: ", .{std.zig.fmtId(prop_name)});
+                    if (!is_required) try out_writer.writeAll("?");
+                    switch (data_type) {
                         .object => {
                             const new_decl_name = try std.mem.concat(allocator, u8, &.{
                                 &[1]u8{std.ascii.toUpper(prop_name[0])},
@@ -256,23 +274,13 @@ fn renderApiType(
                                 .json_obj = prop,
                             } });
 
-                            try out_writer.print("{s}: {s}{s}", .{
-                                std.zig.fmtId(prop_name),
-                                if (is_required) "" else "?",
-                                std.zig.fmtId(new_decl_name),
-                            });
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
                             // TODO: implement this?
                             if (default_val != null) {
                                 std.log.err("Encountered default value for object", .{});
                             }
                         },
                         .array => {
-                            try writeDescriptionAsCommentIfAvailable(out_writer, prop);
-                            try out_writer.print("{s}: {s}", .{
-                                std.zig.fmtId(prop_name),
-                                if (is_required) "" else "?",
-                            });
-
                             var depth: usize = 0;
                             const items = try getNestedArrayChild(prop, &depth);
                             try out_writer.writeAll("[]const ");
@@ -299,11 +307,7 @@ fn renderApiType(
                         },
                         .string => {
                             const enum_list_val = prop.get("enum") orelse {
-                                try writeDescriptionAsCommentIfAvailable(out_writer, prop);
-                                try out_writer.print("{s}: {s}[]const u8", .{
-                                    std.zig.fmtId(prop_name),
-                                    if (is_required) "" else "?",
-                                });
+                                try out_writer.writeAll("[]const u8");
                                 if (default_val) |val| switch (val) {
                                     .String => |str| try out_writer.print(" = \"{s}\"", .{str}),
                                     else => return error.DefaultValueTypeMismatch,
@@ -332,11 +336,7 @@ fn renderApiType(
                                 .json_obj = prop,
                             } });
 
-                            try out_writer.print("{s}: {s}{s}", .{
-                                std.zig.fmtId(prop_name),
-                                if (is_required) "" else "?",
-                                std.zig.fmtId(new_decl_name),
-                            });
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
 
                             if (default_val) |val| switch (val) {
                                 .String => |str| for (enum_list) |enum_val| {
@@ -348,13 +348,8 @@ fn renderApiType(
                             };
                         },
                         inline .number, .integer, .boolean => |tag| {
-                            try writeDescriptionAsCommentIfAvailable(out_writer, prop);
-                            try out_writer.print("{s}: {s}", .{
-                                std.zig.fmtId(prop_name),
-                                if (is_required) "" else "?",
-                            });
-
                             try writeSimpleType(out_writer, tag, prop, number_as_string);
+
                             if (default_val) |val| {
                                 switch (tag) {
                                     .number, .integer => switch (val) {
