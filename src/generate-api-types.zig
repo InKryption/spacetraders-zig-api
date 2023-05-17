@@ -43,7 +43,7 @@ pub fn main() !void {
     try models_json.ensureUnusedCapacity(models_dir_contents.fileCount());
 
     { // populate models_json
-        var parser = std.json.Parser.init(models_arena.allocator(), true);
+        var parser = std.json.Parser.init(models_arena.allocator(), .alloc_if_needed);
         defer parser.deinit();
 
         var it = models_dir_contents.iterator();
@@ -71,16 +71,24 @@ pub fn main() !void {
         else => {},
     } else render_stack.deinit();
 
+    var json_comment_buf = std.ArrayList(u8).init(allocator);
+    defer json_comment_buf.deinit();
+
     for (models_json.keys(), models_json.values()) |model_name, *value| {
         const model_basename = std.fs.path.stem(model_name);
-        const json_obj: *const JsonObj = &value.Object;
+        const json_obj: *const JsonObj = &value.object;
 
         render_stack.clearRetainingCapacity();
         try render_stack.append(.{ .type_decl = .{
             .name = try allocator.dupe(u8, model_basename),
             .json_obj = json_obj,
         } });
-        try renderApiType(allocator, out_writer, &render_stack, params.number_as_string, true);
+        try renderApiType(out_writer, .{
+            .allocator = allocator,
+            .render_stack = &render_stack,
+            .number_as_string = params.number_as_string,
+            .json_comment_buf = if (params.json_as_comment) &json_comment_buf else null,
+        });
     }
 
     // null terminator needed for formatting
@@ -148,14 +156,18 @@ const RenderApiTypeError = error{
     WriteDescriptionAsCommentIfAvailableError;
 
 fn renderApiType(
-    allocator: std.mem.Allocator,
     out_writer: anytype,
-    render_stack: *std.ArrayList(RenderStackCmd),
-    number_as_string: bool,
-    comptime print_json_as_comment: bool,
+    params: struct {
+        allocator: std.mem.Allocator,
+        render_stack: *std.ArrayList(RenderStackCmd),
+        number_as_string: bool,
+        json_comment_buf: ?*std.ArrayList(u8),
+    },
 ) (@TypeOf(out_writer).Error || RenderApiTypeError)!void {
-    var json_comment_buf = if (print_json_as_comment) std.ArrayList(u8).init(allocator);
-    defer if (print_json_as_comment) json_comment_buf.deinit();
+    const allocator = params.allocator;
+    const render_stack = params.render_stack;
+    const number_as_string = params.number_as_string;
+    const maybe_json_comment_buf = params.json_comment_buf;
 
     while (true) {
         const current: RenderStackCmd = render_stack.popOrNull() orelse return;
@@ -163,11 +175,11 @@ fn renderApiType(
             .type_decl => |decl| {
                 defer allocator.free(decl.name);
 
-                if (print_json_as_comment) {
+                if (maybe_json_comment_buf) |json_comment_buf| {
                     json_comment_buf.clearRetainingCapacity();
                     try json_comment_buf.writer().print("{}", .{util.fmtJson(
-                        .{ .Object = decl.json_obj.* },
-                        std.json.StringifyOptions{ .whitespace = .{ .indent = .Tab } },
+                        .{ .object = decl.json_obj.* },
+                        std.json.StringifyOptions{ .whitespace = .{ .indent = .tab } },
                     )});
                     try util.writePrefixedLines(out_writer, "\n// ", json_comment_buf.items);
                     try out_writer.writeAll("\n");
@@ -200,12 +212,12 @@ fn renderApiType(
                 render_stack.appendAssumeCapacity(.obj_def_end); // we just popped so we can assume there's capacity
 
                 const properties: *const JsonObj = if (obj.getPtr("properties")) |val| switch (val.*) {
-                    .Object => |*properties| properties,
+                    .object => |*properties| properties,
                     else => return error.NonObjectPropertiesField,
                 } else return error.ObjectMissingPropertiesField;
 
                 const required: []const std.json.Value = if (obj.get("required")) |val| switch (val) {
-                    .Array => |array| array.items,
+                    .array => |array| array.items,
                     else => return error.NonArrayItemsField,
                 } else &.{};
 
@@ -218,13 +230,13 @@ fn renderApiType(
 
                 for (properties.keys(), properties.values()) |prop_name, *prop_val| {
                     const prop: *const JsonObj = switch (prop_val.*) {
-                        .Object => |*prop| prop,
+                        .object => |*prop| prop,
                         else => return error.NonObjectProperty,
                     };
                     const default_val = prop.get("default");
 
                     const is_required = for (required) |req| {
-                        if (std.mem.eql(u8, prop_name, req.String)) break true;
+                        if (std.mem.eql(u8, prop_name, req.string)) break true;
                     } else false;
 
                     if (try getRefFieldValue(prop)) |ref| {
@@ -309,18 +321,18 @@ fn renderApiType(
                             const enum_list_val = prop.get("enum") orelse {
                                 try out_writer.writeAll("[]const u8");
                                 if (default_val) |val| switch (val) {
-                                    .String => |str| try out_writer.print(" = \"{s}\"", .{str}),
+                                    .string => |str| try out_writer.print(" = \"{s}\"", .{str}),
                                     else => return error.DefaultValueTypeMismatch,
                                 };
                                 try out_writer.writeAll(",\n");
                                 continue;
                             };
                             const enum_list: []const std.json.Value = switch (enum_list_val) {
-                                .Array => |array| array.items,
+                                .array => |array| array.items,
                                 else => return error.NonArrayEnumField,
                             };
                             for (enum_list) |val| {
-                                if (val != .String) {
+                                if (val != .string) {
                                     return error.NonStringEnumFieldElement;
                                 }
                             }
@@ -339,8 +351,8 @@ fn renderApiType(
                             try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
 
                             if (default_val) |val| switch (val) {
-                                .String => |str| for (enum_list) |enum_val| {
-                                    if (!std.mem.eql(u8, enum_val.String, str)) continue;
+                                .string => |str| for (enum_list) |enum_val| {
+                                    if (!std.mem.eql(u8, enum_val.string, str)) continue;
                                     try out_writer.print(" = .{s}", .{std.zig.fmtId(str)});
                                     break;
                                 } else return error.DefaultValueTypeMismatch,
@@ -353,13 +365,13 @@ fn renderApiType(
                             if (default_val) |val| {
                                 switch (tag) {
                                     .number, .integer => switch (val) {
-                                        .Integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
-                                        .Float => |float_val| try out_writer.print(" = {d}", .{float_val}),
-                                        .NumberString => |num_str_val| try out_writer.print(" = {s}", .{num_str_val}),
+                                        .integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
+                                        .float => |float_val| try out_writer.print(" = {d}", .{float_val}),
+                                        .number_string => |num_str_val| try out_writer.print(" = {s}", .{num_str_val}),
                                         else => return error.DefaultValueTypeMismatch,
                                     },
                                     .boolean => switch (val) {
-                                        .Bool => |bool_val| try out_writer.print(" = {}", .{bool_val}),
+                                        .bool => |bool_val| try out_writer.print(" = {}", .{bool_val}),
                                         else => return error.DefaultValueTypeMismatch,
                                     },
                                     else => comptime unreachable,
@@ -389,13 +401,13 @@ fn writeSimpleType(
                 return;
             };
             const enum_list: []const std.json.Value = switch (enum_list_val) {
-                .Array => |array| array.items,
+                .array => |array| array.items,
                 else => return error.NonArrayEnumField,
             };
             try out_writer.writeAll("enum {\n");
             for (enum_list) |val| {
                 const str = switch (val) {
-                    .String => |str| str,
+                    .string => |str| str,
                     else => return error.NonStringEnumFieldElement,
                 };
                 try out_writer.print("{s},\n", .{std.zig.fmtId(str)});
@@ -435,7 +447,7 @@ fn getRefFieldValue(json_obj: *const JsonObj) GetRefFieldValueError!?[]const u8 
     const val = json_obj.get("$ref") orelse return null;
     if (json_obj.count() != 1) return error.NotAlone;
     const str = switch (val) {
-        .String => |str| str,
+        .string => |str| str,
         else => return error.NotAString,
     };
     return str;
@@ -450,7 +462,7 @@ fn getTypeFieldValue(json_obj: *const JsonObj) GetTypeFieldValueError!DataType {
     const untyped_value = json_obj.get("type") orelse
         return error.NotPresent;
     const string_value = switch (untyped_value) {
-        .String => |val| val,
+        .string => |val| val,
         else => return error.NotAString,
     };
     return std.meta.stringToEnum(DataType, string_value) orelse
@@ -467,7 +479,7 @@ fn getNestedArrayChild(json_obj: *const JsonObj, depth: *usize) GetNestedArrayCh
     var current = json_obj;
     while (true) {
         const items = if (current.getPtr("items")) |val| switch (val.*) {
-            .Object => |*obj| obj,
+            .object => |*obj| obj,
             else => return error.NonObjectItemsField,
         } else return error.NoItemsField;
 
@@ -499,7 +511,7 @@ inline fn writeDescriptionAsCommentIfAvailable(
     if ((try getRefFieldValue(json_obj)) != null) return;
     const desc_val = json_obj.get("description") orelse return;
     const desc = switch (desc_val) {
-        .String => |str| str,
+        .string => |str| str,
         else => return error.NonStringDescriptionValue,
     };
     if (desc.len == 0) return;
