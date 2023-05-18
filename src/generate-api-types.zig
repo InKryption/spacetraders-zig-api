@@ -281,16 +281,16 @@ fn renderApiType(
                             });
                             errdefer allocator.free(new_decl_name);
 
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+
+                            if (default_val != null) {
+                                std.log.err("Encountered default value for object", .{});
+                            }
+
                             render_stack.insertAssumeCapacity(prop_cmd_insert_start, .{ .type_decl = .{
                                 .name = new_decl_name,
                                 .json_obj = prop,
                             } });
-
-                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
-                            // TODO: implement this?
-                            if (default_val != null) {
-                                std.log.err("Encountered default value for object", .{});
-                            }
                         },
                         .array => {
                             var depth: usize = 0;
@@ -311,11 +311,16 @@ fn renderApiType(
                             });
                             errdefer allocator.free(new_decl_name);
 
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+
+                            if (default_val != null) {
+                                std.log.err("Encountered default value for array", .{});
+                            }
+
                             render_stack.appendAssumeCapacity(.{ .type_decl = .{
                                 .name = new_decl_name,
                                 .json_obj = items,
                             } });
-                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
                         },
                         .string => {
                             const enum_list_val = prop.get("enum") orelse {
@@ -331,11 +336,9 @@ fn renderApiType(
                                 .array => |array| array.items,
                                 else => return error.NonArrayEnumField,
                             };
-                            for (enum_list) |val| {
-                                if (val != .string) {
-                                    return error.NonStringEnumFieldElement;
-                                }
-                            }
+                            for (enum_list) |val| if (val != .string) {
+                                return error.NonStringEnumFieldElement;
+                            };
 
                             const new_decl_name = try std.mem.concat(allocator, u8, &.{
                                 &[1]u8{std.ascii.toUpper(prop_name[0])},
@@ -343,12 +346,12 @@ fn renderApiType(
                             });
                             errdefer allocator.free(new_decl_name);
 
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+
                             render_stack.appendAssumeCapacity(.{ .type_decl = .{
                                 .name = new_decl_name,
                                 .json_obj = prop,
                             } });
-
-                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
 
                             if (default_val) |val| switch (val) {
                                 .string => |str| for (enum_list) |enum_val| {
@@ -361,22 +364,19 @@ fn renderApiType(
                         },
                         inline .number, .integer, .boolean => |tag| {
                             try writeSimpleType(out_writer, tag, prop, number_as_string);
-
-                            if (default_val) |val| {
-                                switch (tag) {
-                                    .number, .integer => switch (val) {
-                                        .integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
-                                        .float => |float_val| try out_writer.print(" = {d}", .{float_val}),
-                                        .number_string => |num_str_val| try out_writer.print(" = {s}", .{num_str_val}),
-                                        else => return error.DefaultValueTypeMismatch,
-                                    },
-                                    .boolean => switch (val) {
-                                        .bool => |bool_val| try out_writer.print(" = {}", .{bool_val}),
-                                        else => return error.DefaultValueTypeMismatch,
-                                    },
-                                    else => comptime unreachable,
-                                }
-                            }
+                            if (default_val) |val| switch (tag) {
+                                .number, .integer => switch (val) {
+                                    .integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
+                                    .float => |float_val| try out_writer.print(" = {d}", .{float_val}),
+                                    .number_string => |num_str_val| try out_writer.print(" = {s}", .{num_str_val}),
+                                    else => return error.DefaultValueTypeMismatch,
+                                },
+                                .boolean => switch (val) {
+                                    .bool => |bool_val| try out_writer.print(" = {}", .{bool_val}),
+                                    else => return error.DefaultValueTypeMismatch,
+                                },
+                                else => comptime unreachable,
+                            };
                         },
                     }
                     try out_writer.writeAll(",\n");
