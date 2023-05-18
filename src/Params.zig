@@ -2,15 +2,15 @@ const std = @import("std");
 const util = @import("util.zig");
 
 const Params = @This();
-models: []const u8,
-output_path: []const u8,
-number_as_string: bool,
-json_as_comment: bool,
+apidocs_path: ?[]const u8 = null,
+output_path: ?[]const u8 = null,
+number_as_string: bool = false,
+json_as_comment: bool = false,
 
 const ParamId = std.meta.FieldEnum(Params);
 inline fn paramIsFlag(id: ParamId) bool {
     return switch (id) {
-        .models,
+        .apidocs_path,
         .output_path,
         => false,
 
@@ -21,9 +21,16 @@ inline fn paramIsFlag(id: ParamId) bool {
 }
 
 pub fn deinit(params: Params, ally: std.mem.Allocator) void {
-    ally.free(params.output_path);
-    ally.free(params.models);
+    ally.free(params.output_path orelse "");
+    ally.free(params.apidocs_path orelse "");
 }
+
+pub const ParseError = std.mem.Allocator.Error || error{
+    MissingDashDashPrefix,
+    UnrecognizedParameterName,
+    MissingArgumentValue,
+    InvalidParameterFlagValue,
+};
 
 pub fn parseCurrentProcess(
     allocator: std.mem.Allocator,
@@ -35,36 +42,13 @@ pub fn parseCurrentProcess(
     return try Params.parse(allocator, log_scope, &argv);
 }
 
-pub const ParseError = std.mem.Allocator.Error || error{
-    MissingDashDashPrefix,
-    UnrecognizedParameterName,
-    MissingArgumentValue,
-    InvalidParameterFlagValue,
-    MissingArgument,
-};
-
 pub fn parse(
     allocator: std.mem.Allocator,
     comptime log_scope: @TypeOf(.enum_literal),
     argv: anytype,
 ) ParseError!Params {
     const log = std.log.scoped(log_scope);
-
-    var results: @Type(.{ .Struct = .{
-        .is_tuple = false,
-        .layout = .Auto,
-        .backing_integer = null,
-        .decls = &.{},
-        .fields = fields: {
-            var fields = @typeInfo(Params).Struct.fields[0..].*;
-            for (&fields) |*field| {
-                field.type = ?field.type;
-                field.default_value = &@as(field.type, null);
-                field.alignment = 0;
-            }
-            break :fields &fields;
-        },
-    } }) = .{};
+    var result: Params = .{};
 
     while (true) {
         var maybe_next_tok: ?[]const u8 = null;
@@ -103,12 +87,13 @@ pub fn parse(
             log.err("Expected value for parameter '{s}'", .{@tagName(id)});
             return error.MissingArgumentValue;
         };
+
         switch (id) {
             inline //
-            .models,
+            .apidocs_path,
             .output_path,
             => |tag| {
-                const field_ptr = &@field(results, @tagName(tag));
+                const field_ptr = &@field(result, @tagName(tag));
                 const new_slice = try allocator.realloc(@constCast(field_ptr.* orelse ""), next_tok.len);
                 @memcpy(new_slice, next_tok);
                 field_ptr.* = new_slice;
@@ -117,7 +102,7 @@ pub fn parse(
             .number_as_string,
             .json_as_comment,
             => |tag| {
-                const field_ptr = &@field(results, @tagName(tag));
+                const field_ptr = &@field(result, @tagName(tag));
                 field_ptr.* = if (std.mem.eql(u8, next_tok, "true")) true else if (std.mem.eql(u8, next_tok, "false")) false else {
                     log.err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ @tagName(tag), next_tok });
                     return error.InvalidParameterFlagValue;
@@ -126,16 +111,5 @@ pub fn parse(
         }
     }
 
-    return Params{
-        .models = results.models orelse {
-            log.err("Missing argument 'models'.", .{});
-            return error.MissingArgument;
-        },
-        .output_path = results.output_path orelse {
-            log.err("Missing argument 'output_path'.", .{});
-            return error.MissingArgument;
-        },
-        .number_as_string = results.number_as_string orelse false,
-        .json_as_comment = results.json_as_comment orelse false,
-    };
+    return result;
 }

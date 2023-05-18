@@ -14,18 +14,26 @@ pub fn main() !void {
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
 
-    const output_file = try std.fs.cwd().createFile(params.output_path, .{});
+    const apidocs_path: []const u8 = params.apidocs_path orelse return error.MissingModelsParam;
+    const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
+    const number_as_string: bool = params.number_as_string;
+    const json_as_comment: bool = params.json_as_comment;
+
+    const output_file = try std.fs.cwd().createFile(output_path, .{});
     defer output_file.close();
 
     var output_buffer = std.ArrayList(u8).init(allocator);
     defer output_buffer.deinit();
 
+    var apidocs_dir = try std.fs.cwd().openDir(apidocs_path, .{});
+    defer apidocs_dir.close();
+
     const out_writer = output_buffer.writer();
     var models_dir_contents: util.DirectoryFilesContents = blk: {
-        var models_dir = try std.fs.cwd().openIterableDir(params.models, .{});
+        var models_dir = try apidocs_dir.openIterableDir("models", .{});
         defer models_dir.close();
-        var it = models_dir.iterateAssumeFirstIteration();
 
+        var it = models_dir.iterateAssumeFirstIteration();
         break :blk try util.jsonDirectoryFilesContents(
             allocator,
             models_dir,
@@ -59,7 +67,7 @@ pub fn main() !void {
         }
     }
 
-    if (params.number_as_string) try out_writer.print(
+    if (number_as_string) try out_writer.print(
         \\/// Represents a floating point number in string representation.
         \\pub const {s} = []const u8;
         \\
@@ -86,8 +94,8 @@ pub fn main() !void {
         try renderApiType(out_writer, .{
             .allocator = allocator,
             .render_stack = &render_stack,
-            .number_as_string = params.number_as_string,
-            .json_comment_buf = if (params.json_as_comment) &json_comment_buf else null,
+            .number_as_string = number_as_string,
+            .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
         });
     }
 
