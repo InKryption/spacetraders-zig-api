@@ -12,8 +12,8 @@ pub fn build(b: *Build) void {
     _ = json_as_comment;
 
     const gen_types_exe = b.addExecutable(.{
-        .name = "generate-api-types",
-        .root_source_file = Build.FileSource.relative("src/generate-api-types.zig"),
+        .name = "gen-api",
+        .root_source_file = Build.FileSource.relative("src/gen-api.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -31,6 +31,6 @@ pub fn build(b: *Build) void {
     });
     _ = api_types_module;
 
-    const exe_run_step = b.step("run", "Run generate-api-types.zig");
+    const exe_run_step = b.step("run", "Run gen-api.zig");
     exe_run_step.dependOn(&gen_types_exe_run.step);
 }
