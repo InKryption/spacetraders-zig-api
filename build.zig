@@ -21,12 +21,12 @@ pub fn build(b: *Build) void {
         gen_types_exe_run.addArgs(&.{ "--number-as-string", if (number_as_string orelse false) "true" else "false" });
         gen_types_exe_run.addArgs(&.{ "--json-as-comment", if (json_as_comment orelse false) "true" else "false" });
         gen_types_exe_run.addArgs(&.{ "--apidocs-path", apidocs_dir });
-        const api_src_file = gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api-types.zig");
+        const api_src_file = gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
 
         const exe_run_step = b.step("run", "Run gen-api.zig");
         exe_run_step.dependOn(&gen_types_exe_run.step);
 
-        _ = b.addModule("api-types", Build.CreateModuleOptions{
+        _ = b.addModule("api", Build.CreateModuleOptions{
             .source_file = api_src_file,
             .dependencies = &.{},
         });
@@ -47,8 +47,8 @@ pub fn build(b: *Build) void {
     test_gen_types_exe_run.addArgs(&.{ "--number-as-string", if (number_as_string orelse false) "true" else "false" });
     test_gen_types_exe_run.addArgs(&.{ "--json-as-comment", if (json_as_comment orelse false) "true" else "false" });
     test_gen_types_exe_run.addArgs(&.{ "--apidocs-path", cloned_api_docs_path });
-    const api_src_file = test_gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api-types.zig");
+    const api_src_file = test_gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
 
     const test_install = b.step("test-install", "Generate the API and install the file");
-    test_install.dependOn(&b.addInstallFile(api_src_file, "api-types.zig").step);
+    test_install.dependOn(&b.addInstallFile(api_src_file, "api.zig").step);
 }

@@ -148,3 +148,34 @@ const FmtJson = struct {
         try self.value.jsonStringify(self.options, writer);
     }
 };
+
+pub inline fn replaceScalarComptime(
+    comptime T: type,
+    comptime input: []const T,
+    comptime needle: T,
+    comptime replacement: T,
+) *const [input.len]T {
+    comptime return replaceScalarComptimeImpl(
+        T,
+        input.len,
+        input[0..].*,
+        needle,
+        replacement,
+    );
+}
+fn replaceScalarComptimeImpl(
+    comptime T: type,
+    comptime input_len: comptime_int,
+    comptime input: [input_len]T,
+    comptime needle: T,
+    comptime replacement: T,
+) *const [input.len]T {
+    var result = input[0..].*;
+    @setEvalBranchQuota(input.len * 2);
+    for (&result) |*item| {
+        if (item.* == needle) {
+            item.* = replacement;
+        }
+    }
+    return &result;
+}

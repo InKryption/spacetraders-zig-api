@@ -67,11 +67,7 @@ pub fn parse(
             } else maybe_name;
 
             inline for (@typeInfo(ParamId).Enum.fields) |field| {
-                const kebab_case: []const u8 = comptime blk: {
-                    var kebab_case = field.name[0..].*;
-                    std.mem.replaceScalar(u8, &kebab_case, '_', '-');
-                    break :blk &kebab_case;
-                };
+                const kebab_case = util.replaceScalarComptime(u8, field.name, '_', '-');
                 if (std.mem.eql(u8, name, kebab_case)) {
                     break :id @intToEnum(ParamId, field.value);
                 }
@@ -80,6 +76,7 @@ pub fn parse(
             log.err("Unrecognized parameter name '{s}'", .{str});
             return error.UnrecognizedParameterName;
         };
+
         const next_tok: []const u8 = if (maybe_next_tok) |next_tok|
             std.mem.trim(u8, next_tok, &std.ascii.whitespace)
         else if (argv.next()) |next_tok| next_tok else blk: {
