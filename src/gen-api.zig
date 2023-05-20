@@ -131,6 +131,13 @@ pub fn main() !void {
         var operation_id_buf = std.ArrayList(u8).init(allocator);
         defer operation_id_buf.deinit();
 
+        var path_subst_set = std.StringArrayHashMap(struct {
+            start: usize,
+            desc: ?[]const u8,
+            required: bool,
+        }).init(allocator);
+        defer path_subst_set.deinit();
+
         for (paths_obj.keys(), paths_obj.values()) |path, *path_info_val| {
             _ = path;
             const path_info: *const JsonObj = switch (path_info_val.*) {
@@ -138,11 +145,36 @@ pub fn main() !void {
                 else => return error.NonObjectPathField,
             };
 
-            const maybe_top_parameters: ?[]const std.json.Value = if (path_info.get("parameters")) |val| switch (val) {
+            const top_parameters: []const std.json.Value = if (path_info.get("parameters")) |val| switch (val) {
                 .array => |array| array.items,
                 else => return error.NonArrayParametersField,
-            } else null;
-            _ = maybe_top_parameters;
+            } else &.{};
+
+            path_subst_set.clearRetainingCapacity();
+            for (top_parameters) |*top_param_val| {
+                // "description": "The symbol of the ship",
+                // "in": "path",
+                // "name": "shipSymbol",
+                // "required": true,
+                // "schema": {
+                //     "type": "string"
+                // }
+                const top_param: *const JsonObj = switch (top_param_val.*) {
+                    .object => |*object| object,
+                    else => return error.NonObjectTopParam,
+                };
+
+                const desc: ?[]const u8 = try getField(top_param, "description", .string);
+                _ = desc;
+                const in: []const u8 = (try getField(top_param, "in", .string)) orelse return error.MissingInParamField;
+                _ = in;
+                const name: []const u8 = (try getField(top_param, "name", .string)) orelse return error.MissingNameParamField;
+                _ = name;
+                const required: bool = (try getField(top_param, "required", .bool)) orelse return error.MissingRequiredParamField;
+                _ = required;
+                const schema: *const JsonObj = (try getField(top_param, "schema", .object)) orelse return error.MissingSchemaParamField;
+                _ = schema;
+            }
 
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
                 cont: { // <- just a hack to get around not being able to do runtime 'continue'
@@ -160,11 +192,11 @@ pub fn main() !void {
                         else => return error.NonStringPathMethodOperationId,
                     } else return error.PathMethodMissingOperationId;
 
-                    const maybe_method_parameters: ?[]const std.json.Value = if (path_method_info.get("parameters")) |val| switch (val) {
+                    const method_parameters: []const std.json.Value = if (path_method_info.get("parameters")) |val| switch (val) {
                         .array => |array| array.items,
                         else => return error.NonArrayParametersField,
-                    } else null;
-                    _ = maybe_method_parameters;
+                    } else &.{};
+                    _ = method_parameters;
 
                     operation_id_buf.clearRetainingCapacity();
                     try operation_id_buf.appendSlice(operation_id);
@@ -735,4 +767,48 @@ fn getContentApplicationJsonSchema(json_obj: *const JsonObj) !*const JsonObj {
         .object => |*object| object,
         else => error.NonObjectSchemaField,
     } else error.MissingSchemaField;
+}
+
+inline fn getFieldTagMismatchErrorName(comptime tag: @typeInfo(std.json.Value).Union.tag_type.?) []const u8 {
+    comptime return switch (tag) {
+        .null => "NonNullFieldValue",
+        .bool => "NonBoolFieldValue",
+        .integer => "NonIntegerFieldValue",
+        .float => "NonFloatFieldValue",
+        .number_string => "NonNumberStringFieldValue",
+        .string => "NonStringFieldValue",
+        .array => "NonArrayFieldValue",
+        .object => "NonObjectFieldValue",
+    };
+}
+inline fn getField(
+    json_obj: *const JsonObj,
+    name: []const u8,
+    comptime tag: @typeInfo(std.json.Value).Union.tag_type.?,
+) @Type(.{ .ErrorSet = &.{.{ .name = getFieldTagMismatchErrorName(tag) }} })!?switch (tag) {
+    .null => void,
+    .bool => bool,
+    .integer => i64,
+    .float => f64,
+    .number_string => []const u8,
+    .string => []const u8,
+    .array => *const std.ArrayList(std.json.Value),
+    .object => *const JsonObj,
+} {
+    const ptr = json_obj.getPtr(name) orelse return null;
+    if (ptr.* != tag)
+        return @field(anyerror, getFieldTagMismatchErrorName(tag));
+    const field_ptr = &@field(ptr, @tagName(tag));
+    return switch (tag) {
+        .null,
+        .bool,
+        .integer,
+        .float,
+        .number_string,
+        .string,
+        => field_ptr.*,
+        .array,
+        .object,
+        => field_ptr,
+    };
 }
