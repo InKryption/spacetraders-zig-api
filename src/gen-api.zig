@@ -138,6 +138,12 @@ pub fn main() !void {
                 else => return error.NonObjectPathField,
             };
 
+            const maybe_top_parameters: ?[]const std.json.Value = if (path_info.get("parameters")) |val| switch (val) {
+                .array => |array| array.items,
+                else => return error.NonArrayParametersField,
+            } else null;
+            _ = maybe_top_parameters;
+
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
                 cont: { // <- just a hack to get around not being able to do runtime 'continue'
                     const lowercase: []const u8 = comptime blk: {
@@ -154,10 +160,22 @@ pub fn main() !void {
                         else => return error.NonStringPathMethodOperationId,
                     } else return error.PathMethodMissingOperationId;
 
+                    const maybe_method_parameters: ?[]const std.json.Value = if (path_method_info.get("parameters")) |val| switch (val) {
+                        .array => |array| array.items,
+                        else => return error.NonArrayParametersField,
+                    } else null;
+                    _ = maybe_method_parameters;
+
                     operation_id_buf.clearRetainingCapacity();
                     try operation_id_buf.appendSlice(operation_id);
                     std.mem.replaceScalar(u8, operation_id_buf.items, '-', '_');
                     const op_name: []const u8 = operation_id_buf.items;
+
+                    if (json_as_comment) {
+                        try out_writer.writeAll("// ```\n");
+                        try writeJsonAsComment(out_writer, path_method_info, "// ", &json_comment_buf);
+                        try out_writer.writeAll("// ```\n");
+                    }
 
                     try writeStringFieldAsCommentIfAvailable(out_writer, path_method_info, "summary");
                     if (path_method_info.contains("summary")) {
@@ -186,34 +204,56 @@ pub fn main() !void {
                             .allocator = allocator,
                             .render_stack = &render_stack,
                             .number_as_string = number_as_string,
-                            .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
+                            .json_comment_buf = null,
                         });
                     } else {
-                        try out_writer.writeAll("pub const RequestBody = struct {};\n");
+                        try out_writer.writeAll("        pub const RequestBody = struct {};\n");
                     }
 
-                    const maybe_responses: ?*const JsonObj = if (path_method_info.getPtr("responses")) |val| switch (val.*) {
+                    try out_writer.writeAll("        pub const responses = struct {\n");
+
+                    const responses: *const JsonObj = if (path_method_info.getPtr("responses")) |val| switch (val.*) {
                         .object => |*object| object,
                         else => return error.NonObjectResponsesField,
-                    } else null;
+                    } else return error.NoResponses;
 
-                    if (maybe_responses) |responses| {
-                        for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
-                            const response_info: *const JsonObj = switch (response_info_val.*) {
-                                .object => |*object| object,
-                                else => return error.NonObjectResponseField,
-                            };
-                            _ = response_info;
+                    for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
+                        const response_info: *const JsonObj = switch (response_info_val.*) {
+                            .object => |*object| object,
+                            else => return error.NonObjectResponseField,
+                        };
 
-                            const response_code_int = std.fmt.parseInt(u32, response_code_str, 10) catch |err| {
-                                std.log.err("{s}, couldn't parse '{s}' response code value", .{ @errorName(err), response_code_str });
-                                return err;
-                            };
-                            const HttpStatus = std.http.Status;
-                            const response_code = try std.meta.intToEnum(HttpStatus, response_code_int);
-                            _ = response_code;
+                        const response_code_int = std.fmt.parseInt(u32, response_code_str, 10) catch |err| {
+                            std.log.err("{s}, couldn't parse '{s}' response code value", .{ @errorName(err), response_code_str });
+                            return err;
+                        };
+                        const HttpStatus = std.http.Status;
+                        const response_code = try std.meta.intToEnum(HttpStatus, response_code_int);
+
+                        switch (response_code) {
+                            .ok,
+                            .created,
+                            => |tag| {
+                                render_stack.clearRetainingCapacity();
+                                try render_stack.append(RenderStackCmd{ .type_decl = .{
+                                    .name = try allocator.dupe(u8, @tagName(tag)),
+                                    .json_obj = try getContentApplicationJsonSchema(response_info),
+                                } });
+                                try renderApiType(out_writer, .{
+                                    .allocator = allocator,
+                                    .render_stack = &render_stack,
+                                    .number_as_string = number_as_string,
+                                    .json_comment_buf = null,
+                                });
+                            },
+                            .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
+                            else => |tag| {
+                                std.log.err("Unhandled HTTP status '{s}' ({d})", .{ @tagName(tag), @enumToInt(tag) });
+                                return error.UnhandledHttpStatus;
+                            },
                         }
                     }
+                    try out_writer.writeAll("        };\n\n");
 
                     try out_writer.writeAll("    };\n\n");
                 }
@@ -288,6 +328,20 @@ const RenderApiTypeError = error{
     WriteStringFieldAsCommentIfAvailableError ||
     WriteRefPathAsZigNamespaceAccessError;
 
+fn writeJsonAsComment(
+    out_writer: anytype,
+    json_obj: *const JsonObj,
+    comment_prefix: []const u8,
+    json_comment_buf: *std.ArrayList(u8),
+) !void {
+    json_comment_buf.clearRetainingCapacity();
+    try json_comment_buf.writer().print("{}", .{util.fmtJson(
+        .{ .object = json_obj.* },
+        std.json.StringifyOptions{ .whitespace = .{ .indent = .{ .space = 4 } } },
+    )});
+    try util.writeLinesSurrounded(out_writer, comment_prefix, json_comment_buf.items, "\n");
+}
+
 fn renderApiType(
     out_writer: anytype,
     params: struct {
@@ -300,7 +354,7 @@ fn renderApiType(
     const allocator = params.allocator;
     const render_stack = params.render_stack;
     const number_as_string = params.number_as_string;
-    const maybe_json_comment_buf = params.json_comment_buf;
+    var maybe_json_comment_buf = params.json_comment_buf;
 
     while (true) {
         const current: RenderStackCmd = render_stack.popOrNull() orelse return;
@@ -309,13 +363,10 @@ fn renderApiType(
                 defer allocator.free(decl.name);
 
                 if (maybe_json_comment_buf) |json_comment_buf| {
-                    json_comment_buf.clearRetainingCapacity();
-                    try json_comment_buf.writer().print("{}", .{util.fmtJson(
-                        .{ .object = decl.json_obj.* },
-                        std.json.StringifyOptions{ .whitespace = .{ .indent = .tab } },
-                    )});
-                    try util.writePrefixedLines(out_writer, "\n// ", json_comment_buf.items);
-                    try out_writer.writeAll("\n");
+                    try out_writer.writeAll("// ```\n");
+                    try writeJsonAsComment(out_writer, decl.json_obj, "// ", json_comment_buf);
+                    try out_writer.writeAll("// ```\n");
+                    maybe_json_comment_buf = null;
                 }
 
                 try writeStringFieldAsCommentIfAvailable(out_writer, decl.json_obj, "description");
@@ -513,6 +564,8 @@ fn renderApiType(
                     }
                     try out_writer.writeAll(",\n");
                 }
+
+                try out_writer.writeAll("\n");
             },
 
             .obj_def_end => try out_writer.writeAll("}"),
@@ -663,8 +716,7 @@ inline fn writeStringFieldAsCommentIfAvailable(
         else => return error.NonStringFieldValue,
     };
     if (desc.len == 0) return;
-    try util.writePrefixedLines(out_writer, "\n/// ", desc);
-    try out_writer.writeAll("\n");
+    try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
 }
 
 /// returns the equivalent of `json_obj["content"]["application/json"]["schema"]`
