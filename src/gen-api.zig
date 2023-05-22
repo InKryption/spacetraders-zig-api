@@ -244,10 +244,15 @@ pub fn main() !void {
                     try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path_buf.items)});
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
-
-                    if (maybe_request_body) |request_body| {
+                    const empty_request_body_str = "        pub const RequestBody = struct {};\n";
+                    if (maybe_request_body) |request_body| blk: {
                         try writeStringFieldAsCommentIfAvailable(out_writer, request_body, "description");
                         const schema = try getContentApplicationJsonSchema(request_body);
+                        if (schema.count() == 0) {
+                            std.log.warn("Encountered empty RequestBody schema inside path '{s}'. Outputting as empty struct.", .{path});
+                            try out_writer.writeAll(empty_request_body_str);
+                            break :blk;
+                        }
 
                         render_stack.clearRetainingCapacity();
                         try render_stack.append(RenderStackCmd{ .type_decl = .{
@@ -262,7 +267,7 @@ pub fn main() !void {
                             .json_comment_buf = null,
                         });
                     } else {
-                        try out_writer.writeAll("        pub const RequestBody = struct {};\n");
+                        try out_writer.writeAll(empty_request_body_str);
                     }
 
                     try out_writer.writeAll("        pub const responses = struct {\n");
