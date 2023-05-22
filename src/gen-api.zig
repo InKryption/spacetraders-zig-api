@@ -201,6 +201,9 @@ pub fn main() !void {
                     if (!std.mem.eql(u8, param.in, "path")) {
                         return error.NonPathTopLevelParameter;
                     }
+                    if (!param.required) {
+                        return error.OptionalPathParameter;
+                    }
 
                     const data_type = try getTypeFieldValue(param.schema);
                     if (data_type != .string) {
@@ -239,26 +242,6 @@ pub fn main() !void {
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
                     try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path_buf.items)});
-
-                    try out_writer.writeAll("    pub const PathParams = struct {");
-                    render_stack.clearRetainingCapacity();
-                    for (top_level_params_buf.items) |param| {
-                        const type_name = try std.mem.concat(allocator, u8, &.{ &.{std.ascii.toUpper(param.name[0])}, param.name[1..] });
-                        errdefer allocator.free(type_name);
-                        try render_stack.append(RenderStackCmd{ .type_decl = .{
-                            .name = type_name,
-                            .json_obj = param.schema,
-                        } });
-                        try out_writer.print("        {s}: {s},\n", .{ std.zig.fmtId(param.name), std.zig.fmtId(type_name) });
-                    }
-                    try out_writer.writeAll("\n");
-                    try renderApiType(out_writer, .{
-                        .allocator = allocator,
-                        .render_stack = &render_stack,
-                        .number_as_string = number_as_string,
-                        .json_comment_buf = null,
-                    });
-                    try out_writer.writeAll("    };\n\n");
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
 
