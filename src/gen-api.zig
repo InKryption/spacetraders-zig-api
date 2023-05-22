@@ -4,6 +4,11 @@ const assert = std.debug.assert;
 const util = @import("util.zig");
 const Params = @import("Params.zig");
 
+const build_options = @import("build-options");
+pub const std_options = struct {
+    pub const log_level: std.log.Level = build_options.log_level;
+};
+
 const number_as_string_subst_decl_name = "NumberString";
 
 pub fn main() !void {

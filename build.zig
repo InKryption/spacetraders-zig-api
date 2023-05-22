@@ -5,6 +5,8 @@ pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
+    const log_level = b.option(std.log.Level, "log_level", "Specifies the log level of the executable") orelse .warn;
+
     const number_as_string = b.option(bool, "number_as_string", "Use '[]const u8' to represent number fields instead of 'f64'.");
     const json_as_comment = b.option(bool, "json_as_comment", "Print json schema of types as comments on the outputted types.");
 
@@ -15,6 +17,13 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     b.installArtifact(gen_types_exe);
+
+    const build_options = b.addOptions();
+    gen_types_exe.addOptions("build-options", build_options);
+    build_options.contents.writer().print(
+        \\pub const log_level = .{s};
+        \\
+    , .{std.zig.fmtId(@tagName(log_level))}) catch |err| @panic(@errorName(err));
 
     if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir| {
         const gen_types_exe_run = b.addRunArtifact(gen_types_exe);
