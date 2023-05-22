@@ -123,7 +123,7 @@ pub fn main() !void {
             else => return error.NonObjectReferenceFile,
         };
 
-        const paths_obj: *const JsonObj = try (try getField(ref_obj, "paths", .object, null) orelse error.MissingPathsField);
+        const paths_obj: *const JsonObj = try (try getObjField(ref_obj, "paths", .object, null) orelse error.MissingPathsField);
 
         var operation_id_buf = std.ArrayList(u8).init(allocator);
         defer operation_id_buf.deinit();
@@ -142,7 +142,7 @@ pub fn main() !void {
                 else => return error.NonObjectPathField,
             };
 
-            const top_parameters: []const std.json.Value = if (try getField(path_info, "parameters", .array, null)) |array| array.items else &.{};
+            const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
 
             path_subst_set.clearRetainingCapacity();
             for (top_parameters) |*top_param_val| {
@@ -158,15 +158,15 @@ pub fn main() !void {
                     else => return error.NonObjectTopParam,
                 };
 
-                const desc: ?[]const u8 = try getField(top_param, "description", .string, null);
+                const desc: ?[]const u8 = try getObjField(top_param, "description", .string, null);
                 _ = desc;
-                const in: []const u8 = (try getField(top_param, "in", .string, null)) orelse return error.MissingInParamField;
+                const in: []const u8 = (try getObjField(top_param, "in", .string, null)) orelse return error.MissingInParamField;
                 _ = in;
-                const name: []const u8 = (try getField(top_param, "name", .string, null)) orelse return error.MissingNameParamField;
+                const name: []const u8 = (try getObjField(top_param, "name", .string, null)) orelse return error.MissingNameParamField;
                 _ = name;
-                const required: bool = (try getField(top_param, "required", .bool, null)) orelse return error.MissingRequiredParamField;
+                const required: bool = (try getObjField(top_param, "required", .bool, null)) orelse return error.MissingRequiredParamField;
                 _ = required;
-                const schema: *const JsonObj = (try getField(top_param, "schema", .object, null)) orelse return error.MissingSchemaParamField;
+                const schema: *const JsonObj = (try getObjField(top_param, "schema", .object, null)) orelse return error.MissingSchemaParamField;
                 _ = schema;
             }
 
@@ -176,9 +176,9 @@ pub fn main() !void {
                         var lowercase = method_field.name[0..].*;
                         break :blk std.ascii.lowerString(&lowercase, &lowercase);
                     };
-                    const path_method_info: *const JsonObj = try getField(path_info, lowercase, .object, null) orelse break :cont;
-                    const operation_id = try (try getField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
-                    const method_parameters: []const std.json.Value = if (try getField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
+                    const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
+                    const operation_id = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
+                    const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
                     _ = method_parameters;
 
                     operation_id_buf.clearRetainingCapacity();
@@ -200,7 +200,7 @@ pub fn main() !void {
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
 
-                    const maybe_request_body: ?*const JsonObj = try getField(path_method_info, "requestBody", .object, null);
+                    const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
 
                     if (maybe_request_body) |request_body| {
                         try writeStringFieldAsCommentIfAvailable(out_writer, request_body, "description");
@@ -224,7 +224,7 @@ pub fn main() !void {
 
                     try out_writer.writeAll("        pub const responses = struct {\n");
 
-                    const responses: *const JsonObj = try (try getField(path_method_info, "responses", .object, null) orelse error.NoResponses);
+                    const responses: *const JsonObj = try (try getObjField(path_method_info, "responses", .object, null) orelse error.NoResponses);
 
                     for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
                         const response_info: *const JsonObj = switch (response_info_val.*) {
@@ -404,8 +404,8 @@ fn renderApiType(
                 try out_writer.writeAll("struct {\n");
                 render_stack.appendAssumeCapacity(.obj_def_end); // we just popped so we can assume there's capacity
 
-                const properties: *const JsonObj = try (try getField(obj, "properties", .object, null) orelse error.ObjectMissingPropertiesField);
-                const required: []const std.json.Value = if (try getField(obj, "required", .array, null)) |array| array.items else &.{};
+                const properties: *const JsonObj = try (try getObjField(obj, "properties", .object, null) orelse error.ObjectMissingPropertiesField);
+                const required: []const std.json.Value = if (try getObjField(obj, "required", .array, null)) |array| array.items else &.{};
 
                 if (properties.count() < required.len) {
                     return error.TooManyRequiredFields;
@@ -681,7 +681,7 @@ fn getNestedArrayChild(json_obj: *const JsonObj, depth: *usize) GetNestedArrayCh
 
     var current = json_obj;
     while (true) {
-        const items = try (try getField(current, "items", .object, null) orelse error.NoItemsField);
+        const items = try (try getObjField(current, "items", .object, null) orelse error.NoItemsField);
         if ((try getRefFieldValue(items)) != null) {
             return items;
         }
@@ -719,14 +719,14 @@ inline fn writeStringFieldAsCommentIfAvailable(
 
 /// returns the equivalent of `json_obj["content"]["application/json"]["schema"]`
 fn getContentApplicationJsonSchema(json_obj: *const JsonObj) !*const JsonObj {
-    const content: *const JsonObj = try (try getField(json_obj, "content", .object, null) orelse error.MissingContentField);
-    const application_json: *const JsonObj = try (try getField(
+    const content: *const JsonObj = try (try getObjField(json_obj, "content", .object, null) orelse error.MissingContentField);
+    const application_json: *const JsonObj = try (try getObjField(
         content,
         "application/json",
         .object,
         " 'application/json' ",
     ) orelse error.MissingApplicationJsonField);
-    return try getField(application_json, "schema", .object, null) orelse error.MissingSchemaField;
+    return try getObjField(application_json, "schema", .object, null) orelse error.MissingSchemaField;
 }
 
 inline fn getFieldTagMismatchErrorName(comptime tag: @typeInfo(std.json.Value).Union.tag_type.?) []const u8 {
@@ -742,7 +742,7 @@ inline fn getFieldTagMismatchErrorName(comptime tag: @typeInfo(std.json.Value).U
     };
 }
 
-inline fn getField(
+inline fn getObjField(
     json_obj: *const JsonObj,
     comptime name: []const u8,
     comptime tag: @typeInfo(std.json.Value).Union.tag_type.?,
