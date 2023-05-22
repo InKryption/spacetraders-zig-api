@@ -87,12 +87,14 @@ pub fn main() !void {
         , .{number_as_string_subst_decl_name});
 
         for (models_json.keys(), models_json.values()) |model_name, *value| {
-            const model_basename = std.fs.path.stem(model_name);
             const json_obj: *const JsonObj = &value.object;
+
+            const model_basename = try allocator.dupe(u8, std.fs.path.stem(model_name));
+            errdefer allocator.free(model_basename);
 
             render_stack.clearRetainingCapacity();
             try render_stack.append(.{ .type_decl = .{
-                .name = try allocator.dupe(u8, model_basename),
+                .name = model_basename,
                 .json_obj = json_obj,
             } });
             try renderApiType(out_writer, .{
@@ -128,46 +130,83 @@ pub fn main() !void {
         var operation_id_buf = std.ArrayList(u8).init(allocator);
         defer operation_id_buf.deinit();
 
-        var path_subst_set = std.StringArrayHashMap(struct {
-            start: usize,
-            desc: ?[]const u8,
+        const TopLevelParam = struct {
+            description: ?[]const u8,
+            in: []const u8,
+            name: []const u8,
             required: bool,
-        }).init(allocator);
-        defer path_subst_set.deinit();
+            schema: *const JsonObj,
+        };
+
+        var top_level_params_buf = std.ArrayList(TopLevelParam).init(allocator);
+        defer top_level_params_buf.deinit();
+
+        var zig_fmt_path_buf = std.ArrayList(u8).init(allocator);
+        defer zig_fmt_path_buf.deinit();
 
         for (paths_obj.keys(), paths_obj.values()) |path, *path_info_val| {
-            _ = path;
             const path_info: *const JsonObj = switch (path_info_val.*) {
                 .object => |*object| object,
                 else => return error.NonObjectPathField,
             };
 
-            const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
+            { // path parameters and stuff
+                const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
+                top_level_params_buf.clearRetainingCapacity();
+                try top_level_params_buf.ensureUnusedCapacity(top_parameters.len);
+                for (top_parameters) |*top_param_val| {
+                    const top_param: *const JsonObj = switch (top_param_val.*) {
+                        .object => |*object| object,
+                        else => return error.NonObjectTopParam,
+                    };
 
-            path_subst_set.clearRetainingCapacity();
-            for (top_parameters) |*top_param_val| {
-                // "description": "The symbol of the ship",
-                // "in": "path",
-                // "name": "shipSymbol",
-                // "required": true,
-                // "schema": {
-                //     "type": "string"
-                // }
-                const top_param: *const JsonObj = switch (top_param_val.*) {
-                    .object => |*object| object,
-                    else => return error.NonObjectTopParam,
-                };
+                    if (top_param.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!top_param.contains("description"))) {
+                        return error.UnhandledFields;
+                    }
 
-                const desc: ?[]const u8 = try getObjField(top_param, "description", .string, null);
-                _ = desc;
-                const in: []const u8 = (try getObjField(top_param, "in", .string, null)) orelse return error.MissingInParamField;
-                _ = in;
-                const name: []const u8 = (try getObjField(top_param, "name", .string, null)) orelse return error.MissingNameParamField;
-                _ = name;
-                const required: bool = (try getObjField(top_param, "required", .bool, null)) orelse return error.MissingRequiredParamField;
-                _ = required;
-                const schema: *const JsonObj = (try getObjField(top_param, "schema", .object, null)) orelse return error.MissingSchemaParamField;
-                _ = schema;
+                    top_level_params_buf.appendAssumeCapacity(.{
+                        .description = try getObjField(top_param, "description", .string, null),
+                        .in = (try getObjField(top_param, "in", .string, null)) orelse return error.MissingInParamField,
+                        .name = (try getObjField(top_param, "name", .string, null)) orelse return error.MissingNameParamField,
+                        .required = (try getObjField(top_param, "required", .bool, null)) orelse return error.MissingRequiredParamField,
+                        .schema = (try getObjField(top_param, "schema", .object, null)) orelse return error.MissingSchemaParamField,
+                    });
+                }
+
+                zig_fmt_path_buf.clearRetainingCapacity();
+                var path_iter = std.mem.tokenize(u8, path, "/");
+                while (path_iter.next()) |component| {
+                    assert(component.len >= 1);
+                    try zig_fmt_path_buf.append('/');
+                    if (!std.mem.startsWith(u8, component, "{")) {
+                        try zig_fmt_path_buf.appendSlice(component);
+                        continue;
+                    }
+                    if (!std.mem.endsWith(u8, component, "}")) {
+                        std.log.err("Unclosed brace in path '{s}'", .{path});
+                        return error.UnclosedBraceInPath;
+                    }
+                    const param_name = component[1 .. component.len - 1];
+
+                    try zig_fmt_path_buf.appendSlice("{[");
+                    try zig_fmt_path_buf.appendSlice(param_name);
+                    try zig_fmt_path_buf.appendSlice("]s}"); // assume string parameter
+
+                    const param: TopLevelParam = for (top_level_params_buf.items) |param| {
+                        if (std.mem.eql(u8, param.name, param_name)) break param;
+                    } else {
+                        std.log.err("Found substitution '{s}' in path '{s}' which is not defined as a parameter", .{ param_name, path });
+                        return error.UnboundSubstitutionInPath;
+                    };
+                    if (!std.mem.eql(u8, param.in, "path")) {
+                        return error.NonPathTopLevelParameter;
+                    }
+
+                    const data_type = try getTypeFieldValue(param.schema);
+                    if (data_type != .string) {
+                        return error.NonStringPathParameter;
+                    }
+                }
             }
 
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
@@ -177,7 +216,7 @@ pub fn main() !void {
                         break :blk std.ascii.lowerString(&lowercase, &lowercase);
                     };
                     const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
-                    const operation_id = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
+                    const operation_id: []const u8 = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
                     const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
                     _ = method_parameters;
 
@@ -192,13 +231,34 @@ pub fn main() !void {
                         try out_writer.writeAll("// ```\n");
                     }
 
-                    try writeStringFieldAsCommentIfAvailable(out_writer, path_method_info, "summary");
-                    if (path_method_info.contains("summary")) {
-                        try out_writer.writeAll("/// \n");
+                    if (try getObjField(path_method_info, "summary", .string, null)) |summary| {
+                        try util.writeLinesSurrounded(out_writer, "/// ", summary, "\n");
+                        try out_writer.writeAll("///\n");
                     }
                     try writeStringFieldAsCommentIfAvailable(out_writer, path_method_info, "description");
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
+                    try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path_buf.items)});
+
+                    try out_writer.writeAll("    pub const PathParams = struct {");
+                    render_stack.clearRetainingCapacity();
+                    for (top_level_params_buf.items) |param| {
+                        const type_name = try std.mem.concat(allocator, u8, &.{ &.{std.ascii.toUpper(param.name[0])}, param.name[1..] });
+                        errdefer allocator.free(type_name);
+                        try render_stack.append(RenderStackCmd{ .type_decl = .{
+                            .name = type_name,
+                            .json_obj = param.schema,
+                        } });
+                        try out_writer.print("        {s}: {s},\n", .{ std.zig.fmtId(param.name), std.zig.fmtId(type_name) });
+                    }
+                    try out_writer.writeAll("\n");
+                    try renderApiType(out_writer, .{
+                        .allocator = allocator,
+                        .render_stack = &render_stack,
+                        .number_as_string = number_as_string,
+                        .json_comment_buf = null,
+                    });
+                    try out_writer.writeAll("    };\n\n");
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
 
@@ -717,6 +777,16 @@ inline fn writeStringFieldAsCommentIfAvailable(
     try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
 }
 
+const GetContentApplicationJsonSchemaError = error{
+    MissingContentField,
+    NonObjectContentFieldValue,
+
+    MissingApplicationJsonField,
+    @"NonObject'application/json'FieldValue",
+
+    MissingSchemaField,
+    NonObjectSchemaFieldValue,
+};
 /// returns the equivalent of `json_obj["content"]["application/json"]["schema"]`
 fn getContentApplicationJsonSchema(json_obj: *const JsonObj) !*const JsonObj {
     const content: *const JsonObj = try (try getObjField(json_obj, "content", .object, null) orelse error.MissingContentField);
@@ -724,7 +794,7 @@ fn getContentApplicationJsonSchema(json_obj: *const JsonObj) !*const JsonObj {
         content,
         "application/json",
         .object,
-        " 'application/json' ",
+        "'application/json'",
     ) orelse error.MissingApplicationJsonField);
     return try getObjField(application_json, "schema", .object, null) orelse error.MissingSchemaField;
 }
