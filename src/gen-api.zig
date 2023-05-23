@@ -4,7 +4,8 @@ const assert = std.debug.assert;
 const util = @import("util.zig");
 const Params = @import("Params.zig");
 
-const number_as_string_subst_decl_name = "NumberString";
+const NumberFormat = @import("number_format.zig").NumberFormat;
+const number_format_subst_decl_name = "Number";
 
 const build_options = @import("build-options");
 pub const std_options = struct {
@@ -21,7 +22,7 @@ pub fn main() !void {
 
     const apidocs_path: []const u8 = params.apidocs_path orelse return error.MissingModelsParam;
     const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
-    const number_as_string: bool = params.number_as_string;
+    const number_format: NumberFormat = params.number_format;
     const json_as_comment: bool = params.json_as_comment;
 
     const output_file = try std.fs.cwd().createFile(output_path, .{});
@@ -44,11 +45,15 @@ pub fn main() !void {
     var json_comment_buf = std.ArrayList(u8).init(allocator);
     defer json_comment_buf.deinit();
 
-    if (number_as_string) try out_writer.print(
-        \\/// Represents a floating point number in string representation.
-        \\pub const {s} = []const u8;
+    try out_writer.print(
+        \\/// Represents a floating point number.
+        \\pub const Number = {s};
         \\
-    , .{number_as_string_subst_decl_name});
+        \\
+    , .{switch (number_format) {
+        .number_string => "[]const u8",
+        .f128, .f64 => |tag| @tagName(tag),
+    }});
 
     var required_model_refs = std.BufSet.init(allocator);
     defer required_model_refs.deinit();
@@ -229,7 +234,6 @@ pub fn main() !void {
                                 .render_stack = &render_stack,
                                 .current_dir_path = "./reference",
                                 .required_refs = &required_model_refs,
-                                .number_as_string = number_as_string,
                                 .json_comment_buf = null,
                             },
                         );
@@ -238,7 +242,6 @@ pub fn main() !void {
                     }
 
                     try out_writer.writeAll("        pub const responses = struct {\n");
-
                     const responses: *const JsonObj = try (try getObjField(path_method_info, "responses", .object, null) orelse error.NoResponses);
 
                     for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
@@ -270,7 +273,6 @@ pub fn main() !void {
                                         .render_stack = &render_stack,
                                         .current_dir_path = "./reference",
                                         .required_refs = &required_model_refs,
-                                        .number_as_string = number_as_string,
                                         .json_comment_buf = null,
                                     },
                                 );
@@ -325,7 +327,6 @@ pub fn main() !void {
                     .render_stack = &render_stack,
                     .current_dir_path = "./models",
                     .required_refs = &required_model_refs,
-                    .number_as_string = number_as_string,
                     .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
                 },
             );
@@ -395,12 +396,14 @@ const RenderApiTypeError = error{
     TooManyRequiredFields,
     NonObjectProperty,
     DefaultValueTypeMismatch,
+    NonStringDescriptionFieldValue,
 } || std.mem.Allocator.Error ||
     GetRefFieldValueError ||
     GetTypeFieldValueError ||
     GetNestedArrayChildError ||
     WriteStringFieldAsCommentIfAvailableError ||
-    WriteRefPathAsZigNamespaceAccessError;
+    WriteRefPathAsZigNamespaceAccessError ||
+    WriteSimpleTypeError;
 
 fn writeJsonAsComment(
     out_writer: anytype,
@@ -424,13 +427,11 @@ inline fn renderApiTypeWith(
     assert(params.render_stack.items.len == 0);
     try params.render_stack.ensureUnusedCapacity(1);
 
-    const duped_name = try params.allocator.dupe(u8, root.name);
-    errdefer params.allocator.free(duped_name);
-
     params.render_stack.appendAssumeCapacity(.{ .type_decl = .{
-        .name = duped_name,
+        .name = try params.allocator.dupe(u8, root.name),
         .json_obj = root.json_obj,
     } });
+
     return try renderApiType(out_writer, params);
 }
 
@@ -443,7 +444,6 @@ const RenderApiTypeParams = struct {
     /// of the api-docs.
     current_dir_path: []const u8,
     required_refs: *std.BufSet,
-    number_as_string: bool,
     json_comment_buf: ?*std.ArrayList(u8),
 };
 
@@ -455,7 +455,6 @@ fn renderApiType(
     const render_stack = params.render_stack;
     const required_refs = params.required_refs;
     const current_dir_path = params.current_dir_path;
-    const number_as_string = params.number_as_string;
     var maybe_json_comment_buf = params.json_comment_buf;
 
     while (true) {
@@ -487,7 +486,7 @@ fn renderApiType(
                     .number,
                     .integer,
                     .boolean,
-                    => |tag| try writeSimpleType(out_writer, tag, decl.json_obj, number_as_string),
+                    => |tag| try writeSimpleType(out_writer, tag, decl.json_obj),
                 }
                 try out_writer.writeAll(";\n\n");
             },
@@ -545,6 +544,21 @@ fn renderApiType(
 
                         .number,
                         .integer,
+                        => {
+                            const maybe_min = try getObjField(prop, "minimum", .integer, null);
+                            const maybe_max = try getObjField(prop, "maximum", .integer, null);
+                            if (try getObjField(prop, "description", .string, null)) |desc| {
+                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                                if (maybe_min != null or maybe_max != null)
+                                    try out_writer.writeAll("///\n");
+                            }
+                            if (maybe_min) |min| {
+                                try out_writer.print("/// minimum: {d}\n", .{min});
+                            }
+                            if (maybe_max) |max| {
+                                try out_writer.print("/// maximum: {d}\n", .{max});
+                            }
+                        },
                         .boolean,
                         .array,
                         => try writeStringFieldAsCommentIfAvailable(out_writer, prop, "description"),
@@ -651,7 +665,7 @@ fn renderApiType(
                             };
                         },
                         inline .number, .integer, .boolean => |tag| {
-                            try writeSimpleType(out_writer, tag, prop, number_as_string);
+                            try writeSimpleType(out_writer, tag, prop);
                             if (default_val) |val| switch (tag) {
                                 .number, .integer => switch (val) {
                                     .integer => |int_val| try out_writer.print(" = {d}", .{int_val}),
@@ -678,22 +692,26 @@ fn renderApiType(
     }
 }
 
+const WriteSimpleTypeError = error{
+    NonArrayEnumFieldValue,
+    NonStringEnumFieldElement,
+    NonStringFormatFieldValue,
+    UnrecognizedIntegerFormat,
+    NonIntegerMinimumFieldValue,
+    NonIntegerMaximumFieldValue,
+    IntegerMinGreaterThanMax,
+    MinSmallerThanFormatMin,
+    MaxGreaterThanFormatMax,
+    IntegerRangeOverflow,
+};
 fn writeSimpleType(
     out_writer: anytype,
     comptime tag: DataType,
     json_obj: *const JsonObj,
-    number_as_string: bool,
-) !void {
+) (@TypeOf(out_writer).Error || WriteSimpleTypeError)!void {
     switch (tag) {
         .string => {
-            const enum_list_val = json_obj.get("enum") orelse {
-                try out_writer.writeAll("[]const u8");
-                return;
-            };
-            const enum_list: []const std.json.Value = switch (enum_list_val) {
-                .array => |array| array.items,
-                else => return error.NonArrayEnumField,
-            };
+            const enum_list: []const std.json.Value = (try getObjField(json_obj, "enum", .array, null) orelse return).items;
             try out_writer.writeAll("enum {\n");
             for (enum_list) |val| {
                 const str = switch (val) {
@@ -705,16 +723,58 @@ fn writeSimpleType(
             try out_writer.writeAll("}");
         },
         .number => {
-            // TODO: handle other parts of number information (min/max/format)
-            if (number_as_string) {
-                try out_writer.writeAll(number_as_string_subst_decl_name);
-            } else {
-                try out_writer.writeAll("f64");
-            }
+            try out_writer.writeAll(number_format_subst_decl_name);
         },
         .integer => {
-            // TODO: handle other parts of integer information (min/max/format)
-            try out_writer.writeAll("i64");
+            const Format = enum {
+                int32,
+                int64,
+
+                inline fn writeType(format: @This(), writer: @TypeOf(out_writer)) !void {
+                    switch (format) {
+                        .int32 => try writer.writeAll("i32"),
+                        .int64 => try writer.writeAll("i64"),
+                    }
+                }
+
+                inline fn min(format: @This()) i64 {
+                    return switch (format) {
+                        .int32 => std.math.minInt(i32),
+                        .int64 => std.math.minInt(i64),
+                    };
+                }
+                inline fn max(format: @This()) i64 {
+                    return switch (format) {
+                        .int32 => std.math.maxInt(i32),
+                        .int64 => std.math.maxInt(i64),
+                    };
+                }
+            };
+            const maybe_format: ?Format = if (try getObjField(json_obj, "format", .string, null)) |format_str|
+                std.meta.stringToEnum(Format, format_str) orelse
+                    return error.UnrecognizedIntegerFormat
+            else
+                null;
+            const maybe_min = try getObjField(json_obj, "minimum", .integer, null);
+            const maybe_max = try getObjField(json_obj, "maximum", .integer, null);
+
+            if (maybe_min != null and maybe_max != null and
+                maybe_min.? > maybe_max.?)
+            {
+                return error.IntegerMinGreaterThanMax;
+            }
+
+            const format = maybe_format orelse .int64;
+            const min = maybe_min orelse format.min();
+            const max = maybe_max orelse format.max();
+            if (min < format.min()) return error.MinSmallerThanFormatMin;
+            if (max > format.max()) return error.MaxGreaterThanFormatMax;
+
+            const ranged_info = util.intInfoFittingRange(min, max) orelse {
+                return error.IntegerRangeOverflow;
+            };
+            try util.writeIntTypeName(out_writer, ranged_info);
+            return;
         },
         .boolean => {
             // TODO: are there edge cases to this?

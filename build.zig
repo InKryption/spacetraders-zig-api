@@ -1,13 +1,16 @@
 const std = @import("std");
 const Build = std.Build;
 
+const util = @import("src/util.zig");
+const NumberFormat = @import("src/number_format.zig").NumberFormat;
+
 pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
     const log_level = b.option(std.log.Level, "log_level", "Specifies the log level of the executable") orelse .warn;
 
-    const number_as_string = b.option(bool, "number_as_string", "Use '[]const u8' to represent number fields instead of 'f64'.");
+    const number_format = b.option(NumberFormat, "number_format", "Use '[]const u8' to represent number fields instead of 'f64'.");
     const json_as_comment = b.option(bool, "json_as_comment", "Print json schema of types as comments on the outputted types.");
 
     const gen_types_exe = b.addExecutable(.{
@@ -27,7 +30,7 @@ pub fn build(b: *Build) void {
 
     if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir| {
         const gen_types_exe_run = b.addRunArtifact(gen_types_exe);
-        gen_types_exe_run.addArgs(&.{ "--number-as-string", if (number_as_string orelse false) "true" else "false" });
+        gen_types_exe_run.addArgs(&.{ "--number-format", util.replaceScalarEnumTag(number_format orelse .number_string, '_', '-') });
         gen_types_exe_run.addArgs(&.{ "--json-as-comment", if (json_as_comment orelse false) "true" else "false" });
         gen_types_exe_run.addArgs(&.{ "--apidocs-path", apidocs_dir });
         const api_src_file = gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
@@ -53,7 +56,7 @@ pub fn build(b: *Build) void {
     if (if (std.fs.cwd().access(cloned_api_docs_path, .{})) |_| false else |_| true)
         test_gen_types_exe_run.step.dependOn(&git_clone_api_docs.step);
 
-    test_gen_types_exe_run.addArgs(&.{ "--number-as-string", if (number_as_string orelse false) "true" else "false" });
+    test_gen_types_exe_run.addArgs(&.{ "--number-format", util.replaceScalarEnumTag(number_format orelse .number_string, '_', '-') });
     test_gen_types_exe_run.addArgs(&.{ "--json-as-comment", if (json_as_comment orelse false) "true" else "false" });
     test_gen_types_exe_run.addArgs(&.{ "--apidocs-path", cloned_api_docs_path });
     const api_src_file = test_gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");

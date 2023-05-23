@@ -4,8 +4,10 @@ const util = @import("util.zig");
 const Params = @This();
 apidocs_path: ?[]const u8 = null,
 output_path: ?[]const u8 = null,
-number_as_string: bool = false,
+number_format: NumberFormat = .number_string,
 json_as_comment: bool = false,
+
+const NumberFormat = @import("number_format.zig").NumberFormat;
 
 const ParamId = std.meta.FieldEnum(Params);
 inline fn paramIsFlag(id: ParamId) bool {
@@ -14,9 +16,9 @@ inline fn paramIsFlag(id: ParamId) bool {
         .output_path,
         => false,
 
-        .number_as_string,
-        .json_as_comment,
-        => true,
+        .number_format => false,
+
+        .json_as_comment => true,
     };
 }
 
@@ -85,6 +87,10 @@ pub fn parse(
             return error.MissingArgumentValue;
         };
 
+        const id_kebab_name: []const u8 = switch (id) {
+            inline else => |tag| util.replaceScalarComptime(u8, @tagName(tag), '_', '-'),
+        };
+
         switch (id) {
             inline //
             .apidocs_path,
@@ -96,14 +102,40 @@ pub fn parse(
                 field_ptr.* = new_slice;
             },
             inline //
-            .number_as_string,
-            .json_as_comment,
-            => |tag| {
+            .json_as_comment => |tag| {
                 const field_ptr = &@field(result, @tagName(tag));
                 field_ptr.* = if (std.mem.eql(u8, next_tok, "true")) true else if (std.mem.eql(u8, next_tok, "false")) false else {
-                    log.err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ @tagName(tag), next_tok });
+                    log.err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ id_kebab_name, next_tok });
                     return error.InvalidParameterFlagValue;
                 };
+            },
+            inline //
+            .number_format => |tag| blk: {
+                const field_ptr = &@field(result, @tagName(tag));
+                const Enum = @TypeOf(field_ptr.*);
+                inline for (@typeInfo(Enum).Enum.fields) |enum_field| {
+                    const kebab_name = util.replaceScalarComptime(u8, enum_field.name, '_', '-');
+                    if (std.mem.eql(u8, kebab_name, next_tok)) {
+                        field_ptr.* = @intToEnum(Enum, enum_field.value);
+                        break :blk;
+                    }
+                }
+
+                log.err("'{s}' was passed invalid value '{s}' - must be one of:\n{}", .{
+                    id_kebab_name,
+                    next_tok,
+                    struct {
+                        pub fn format(
+                            _: @This(),
+                            comptime _: []const u8,
+                            _: std.fmt.FormatOptions,
+                            writer: anytype,
+                        ) !void {
+                            inline for (@typeInfo(Enum).Enum.fields) |e_field|
+                                try writer.print("   * '{s}'\n", .{util.replaceScalarComptime(u8, e_field.name, '_', '-')});
+                        }
+                    }{},
+                });
             },
         }
     }

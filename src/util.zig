@@ -65,3 +65,64 @@ fn replaceScalarComptimeImpl(
     }
     return &result;
 }
+
+pub inline fn replaceScalarEnumTag(
+    value: anytype,
+    comptime needle: u8,
+    comptime replacement: u8,
+) []const u8 {
+    const Enum = @TypeOf(value);
+    inline for (@typeInfo(Enum).Enum.fields) |field| {
+        if (value == @intToEnum(Enum, field.value)) {
+            return comptime replaceScalarComptime(u8, field.name, needle, replacement);
+        }
+    }
+    unreachable;
+}
+
+/// Returns the smallest integer type that can hold both from and to.
+pub fn intInfoFittingRange(from: anytype, to: anytype) ?std.builtin.Type.Int {
+    assert(from <= to);
+    const From = @TypeOf(from);
+    // const To = @TypeOf(to);
+    const Peer = @TypeOf(from, to);
+    if (Peer == comptime_int) {
+        return @typeInfo(std.math.IntFittingRange(from, to)).Int;
+    }
+    if (from == 0 and to == 0) {
+        return @typeInfo(u0).Int;
+    }
+    const signedness: std.builtin.Signedness = if (from < 0) .signed else .unsigned;
+    const largest_positive_integer = std.math.absCast(@max(to, switch (from) {
+        // `-from` overflows if it's `std.math.minInt(From)`, but
+        // subtracting 1 from the upcasted version of that value results in `std.math.maxInt(From)`
+        std.math.minInt(From) => std.math.maxInt(From),
+        std.math.minInt(From) + 1...-1 => (-from) - 1,
+        0...std.math.maxInt(From) => from,
+    })); // two's complement
+    const base = std.math.log2_int(@TypeOf(largest_positive_integer), largest_positive_integer);
+    const upper = (@as(@TypeOf(largest_positive_integer), 1) << base) - 1;
+    var magnitude_bits: u16 = if (upper >= largest_positive_integer) base else base + 1;
+    if (signedness == .signed) {
+        magnitude_bits += 1;
+    }
+    // return std.meta.Int(signedness, magnitude_bits);
+    return .{
+        .bits = magnitude_bits,
+        .signedness = signedness,
+    };
+}
+pub inline fn writeIntTypeName(
+    writer: anytype,
+    info: std.builtin.Type.Int,
+) !void {
+    switch (info.signedness) {
+        inline else => |sign| {
+            const sign_prefix = switch (sign) {
+                .signed => "i",
+                .unsigned => "u",
+            };
+            try writer.print(sign_prefix ++ "{d}", .{info.bits});
+        },
+    }
+}
