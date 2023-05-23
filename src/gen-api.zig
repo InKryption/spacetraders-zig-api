@@ -4,12 +4,12 @@ const assert = std.debug.assert;
 const util = @import("util.zig");
 const Params = @import("Params.zig");
 
+const number_as_string_subst_decl_name = "NumberString";
+
 const build_options = @import("build-options");
 pub const std_options = struct {
     pub const log_level: std.log.Level = build_options.log_level;
 };
-
-const number_as_string_subst_decl_name = "NumberString";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -44,75 +44,22 @@ pub fn main() !void {
     var json_comment_buf = std.ArrayList(u8).init(allocator);
     defer json_comment_buf.deinit();
 
-    { // write model types
-        try out_writer.writeAll("pub const models = struct {\n");
+    if (number_as_string) try out_writer.print(
+        \\/// Represents a floating point number in string representation.
+        \\pub const {s} = []const u8;
+        \\
+    , .{number_as_string_subst_decl_name});
 
-        var models_dir_contents: util.DirectoryFilesContents = blk: {
-            var models_dir = try apidocs_dir.openIterableDir("models", .{});
-            defer models_dir.close();
+    var required_model_refs = std.BufSet.init(allocator);
+    defer required_model_refs.deinit();
 
-            var it = models_dir.iterateAssumeFirstIteration();
-            break :blk try util.jsonDirectoryFilesContents(
-                allocator,
-                models_dir,
-                &it,
-                .@"collect-models",
-            );
-        };
-        defer models_dir_contents.deinit(allocator);
+    // this should only be used in loops, and reset every iteration.
+    var loop_arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer loop_arena_state.deinit();
+    const loop_arena = loop_arena_state.allocator();
 
-        var models_arena = std.heap.ArenaAllocator.init(allocator);
-        defer models_arena.deinit();
-
-        var models_json = std.StringArrayHashMap(std.json.Value).init(allocator);
-        defer models_json.deinit();
-        try models_json.ensureUnusedCapacity(models_dir_contents.fileCount());
-
-        { // populate models_json
-            var parser = std.json.Parser.init(models_arena.allocator(), .alloc_if_needed);
-            defer parser.deinit();
-
-            var it = models_dir_contents.iterator();
-            while (it.next()) |entry| {
-                parser.reset();
-
-                var value_tree = try parser.parse(entry.value);
-                errdefer value_tree.deinit();
-
-                const gop = models_json.getOrPutAssumeCapacity(entry.key);
-                assert(!gop.found_existing);
-                gop.value_ptr.* = value_tree.root;
-            }
-        }
-
-        if (number_as_string) try out_writer.print(
-            \\/// Represents a floating point number in string representation.
-            \\pub const {s} = []const u8;
-            \\
-        , .{number_as_string_subst_decl_name});
-
-        for (models_json.keys(), models_json.values()) |model_name, *value| {
-            const name = std.fs.path.stem(model_name);
-            const json_obj: *const JsonObj = &value.object;
-
-            render_stack.clearRetainingCapacity();
-            try renderApiTypeWith(
-                out_writer,
-                RenderStackCmd.TypeDecl{
-                    .name = name,
-                    .json_obj = json_obj,
-                },
-                RenderApiTypeParams{
-                    .allocator = allocator,
-                    .render_stack = &render_stack,
-                    .number_as_string = number_as_string,
-                    .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
-                },
-            );
-        }
-
-        try out_writer.writeAll("};\n\n");
-    }
+    var json_parser = std.json.Parser.init(allocator, .alloc_if_needed);
+    defer json_parser.deinit();
 
     { // write reference
         try out_writer.writeAll("pub const ref = struct {\n");
@@ -120,10 +67,7 @@ pub fn main() !void {
         const ref_json_content = try apidocs_dir.readFileAlloc(allocator, "reference/SpaceTraders.json", 1 << 21);
         defer allocator.free(ref_json_content);
 
-        var parser = std.json.Parser.init(allocator, .alloc_if_needed);
-        defer parser.deinit();
-
-        var ref_json_root = try parser.parse(ref_json_content);
+        var ref_json_root = try json_parser.parse(ref_json_content);
         defer ref_json_root.deinit();
 
         const ref_obj: *const JsonObj = switch (ref_json_root.root) {
@@ -133,9 +77,6 @@ pub fn main() !void {
 
         const paths_obj: *const JsonObj = try (try getObjField(ref_obj, "paths", .object, null) orelse error.MissingPathsField);
 
-        var operation_id_buf = std.ArrayList(u8).init(allocator);
-        defer operation_id_buf.deinit();
-
         const TopLevelParam = struct {
             description: ?[]const u8,
             in: []const u8,
@@ -144,48 +85,52 @@ pub fn main() !void {
             schema: *const JsonObj,
         };
 
-        var top_level_params_buf = std.ArrayList(TopLevelParam).init(allocator);
-        defer top_level_params_buf.deinit();
-
-        var zig_fmt_path_buf = std.ArrayList(u8).init(allocator);
-        defer zig_fmt_path_buf.deinit();
-
         for (paths_obj.keys(), paths_obj.values()) |path, *path_info_val| {
+            for (0..3) |_| if (loop_arena_state.reset(.retain_capacity)) break;
+
             const path_info: *const JsonObj = switch (path_info_val.*) {
                 .object => |*object| object,
                 else => return error.NonObjectPathField,
             };
 
-            { // path parameters and stuff
+            const top_params: []const TopLevelParam = blk: {
                 const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
-                top_level_params_buf.clearRetainingCapacity();
-                try top_level_params_buf.ensureUnusedCapacity(top_parameters.len);
-                for (top_parameters) |*top_param_val| {
-                    const top_param: *const JsonObj = switch (top_param_val.*) {
+                const top_params: []TopLevelParam = try loop_arena.alloc(TopLevelParam, top_parameters.len);
+                errdefer loop_arena.free(top_params);
+
+                for (top_params, top_parameters) |*top_param, *top_parameter_val| {
+                    const top_parameter: *const JsonObj = switch (top_parameter_val.*) {
                         .object => |*object| object,
                         else => return error.NonObjectTopParam,
                     };
 
-                    if (top_param.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!top_param.contains("description"))) {
+                    if (top_parameter.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!top_parameter.contains("description"))) {
                         return error.UnhandledFields;
                     }
 
-                    top_level_params_buf.appendAssumeCapacity(.{
-                        .description = try getObjField(top_param, "description", .string, null),
-                        .in = (try getObjField(top_param, "in", .string, null)) orelse return error.MissingInParamField,
-                        .name = (try getObjField(top_param, "name", .string, null)) orelse return error.MissingNameParamField,
-                        .required = (try getObjField(top_param, "required", .bool, null)) orelse return error.MissingRequiredParamField,
-                        .schema = (try getObjField(top_param, "schema", .object, null)) orelse return error.MissingSchemaParamField,
-                    });
+                    top_param.* = .{
+                        .description = try getObjField(top_parameter, "description", .string, null),
+                        .in = (try getObjField(top_parameter, "in", .string, null)) orelse return error.MissingInParamField,
+                        .name = (try getObjField(top_parameter, "name", .string, null)) orelse return error.MissingNameParamField,
+                        .required = (try getObjField(top_parameter, "required", .bool, null)) orelse return error.MissingRequiredParamField,
+                        .schema = (try getObjField(top_parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
+                    };
                 }
 
-                zig_fmt_path_buf.clearRetainingCapacity();
+                break :blk top_params;
+            };
+            defer loop_arena.free(top_params);
+
+            const zig_fmt_path: []const u8 = blk: {
+                var zig_fmt_path = std.ArrayList(u8).init(loop_arena);
+                defer zig_fmt_path.deinit();
+
                 var path_iter = std.mem.tokenize(u8, path, "/");
                 while (path_iter.next()) |component| {
                     assert(component.len >= 1);
-                    try zig_fmt_path_buf.append('/');
+                    try zig_fmt_path.append('/');
                     if (!std.mem.startsWith(u8, component, "{")) {
-                        try zig_fmt_path_buf.appendSlice(component);
+                        try zig_fmt_path.appendSlice(component);
                         continue;
                     }
                     if (!std.mem.endsWith(u8, component, "}")) {
@@ -194,11 +139,11 @@ pub fn main() !void {
                     }
                     const param_name = component[1 .. component.len - 1];
 
-                    try zig_fmt_path_buf.appendSlice("{[");
-                    try zig_fmt_path_buf.appendSlice(param_name);
-                    try zig_fmt_path_buf.appendSlice("]s}"); // assume string parameter
+                    try zig_fmt_path.appendSlice("{[");
+                    try zig_fmt_path.appendSlice(param_name);
+                    try zig_fmt_path.appendSlice("]s}"); // assume string parameter
 
-                    const param: TopLevelParam = for (top_level_params_buf.items) |param| {
+                    const param: TopLevelParam = for (top_params) |param| {
                         if (std.mem.eql(u8, param.name, param_name)) break param;
                     } else {
                         std.log.err("Found substitution '{s}' in path '{s}' which is not defined as a parameter", .{ param_name, path });
@@ -216,7 +161,14 @@ pub fn main() !void {
                         return error.NonStringPathParameter;
                     }
                 }
-            }
+
+                if (zig_fmt_path.items.len == 0) {
+                    try zig_fmt_path.append('/');
+                }
+
+                break :blk try zig_fmt_path.toOwnedSlice();
+            };
+            defer loop_arena.free(zig_fmt_path);
 
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
                 cont: { // <- just a hack to get around not being able to do runtime 'continue'
@@ -226,13 +178,18 @@ pub fn main() !void {
                     };
                     const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
                     const operation_id: []const u8 = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
+
+                    // TODO: generate code representing method parameters (long over-due)
                     const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
                     _ = method_parameters;
 
-                    operation_id_buf.clearRetainingCapacity();
-                    try operation_id_buf.appendSlice(operation_id);
-                    std.mem.replaceScalar(u8, operation_id_buf.items, '-', '_');
-                    const op_name: []const u8 = operation_id_buf.items;
+                    const op_name: []const u8 = blk: {
+                        const op_name = try loop_arena.dupe(u8, operation_id);
+                        errdefer loop_arena.free(op_name);
+                        std.mem.replaceScalar(u8, op_name, '-', '_');
+                        break :blk op_name;
+                    };
+                    defer loop_arena.free(op_name);
 
                     if (json_as_comment) {
                         try out_writer.writeAll("// ```\n");
@@ -247,7 +204,7 @@ pub fn main() !void {
                     try writeStringFieldAsCommentIfAvailable(out_writer, path_method_info, "description");
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
-                    try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path_buf.items)});
+                    try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path)});
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                     const empty_request_body_str = "        pub const RequestBody = struct {};\n";
@@ -270,6 +227,8 @@ pub fn main() !void {
                             RenderApiTypeParams{
                                 .allocator = allocator,
                                 .render_stack = &render_stack,
+                                .current_dir_path = "./reference",
+                                .required_refs = &required_model_refs,
                                 .number_as_string = number_as_string,
                                 .json_comment_buf = null,
                             },
@@ -309,6 +268,8 @@ pub fn main() !void {
                                     RenderApiTypeParams{
                                         .allocator = allocator,
                                         .render_stack = &render_stack,
+                                        .current_dir_path = "./reference",
+                                        .required_refs = &required_model_refs,
                                         .number_as_string = number_as_string,
                                         .json_comment_buf = null,
                                     },
@@ -326,6 +287,51 @@ pub fn main() !void {
                     try out_writer.writeAll("    };\n\n");
                 }
             }
+        }
+
+        try out_writer.writeAll("};\n\n");
+    }
+
+    { // write required model types
+        try out_writer.writeAll("pub const models = struct {\n");
+
+        var iter = required_model_refs.iterator();
+
+        var finished_set = std.BufSet.init(allocator);
+        defer finished_set.deinit();
+        while (true) {
+            for (0..3) |_| if (loop_arena_state.reset(.retain_capacity)) break;
+
+            const ref: []const u8 = (iter.next() orelse break).*;
+            if (finished_set.contains(ref)) continue;
+            try finished_set.insert(ref);
+
+            const model_file_contents = try apidocs_dir.readFileAlloc(loop_arena, ref, 1 << 21);
+            defer loop_arena.free(model_file_contents);
+
+            json_parser.reset();
+            var model_json = try json_parser.parse(model_file_contents);
+            defer model_json.deinit();
+
+            render_stack.clearRetainingCapacity();
+            try renderApiTypeWith(
+                out_writer,
+                RenderStackCmd.TypeDecl{
+                    .name = std.fs.path.stem(ref),
+                    .json_obj = &model_json.root.object,
+                },
+                RenderApiTypeParams{
+                    .allocator = allocator,
+                    .render_stack = &render_stack,
+                    .current_dir_path = "./models",
+                    .required_refs = &required_model_refs,
+                    .number_as_string = number_as_string,
+                    .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
+                },
+            );
+
+            required_model_refs.remove(ref);
+            iter = required_model_refs.iterator();
         }
 
         try out_writer.writeAll("};\n\n");
@@ -429,8 +435,14 @@ inline fn renderApiTypeWith(
 }
 
 const RenderApiTypeParams = struct {
-    render_stack: *std.ArrayList(RenderStackCmd),
     allocator: std.mem.Allocator,
+    render_stack: *std.ArrayList(RenderStackCmd),
+    /// directory in which the current file is,
+    /// used to resolve relative '$ref' fields.
+    /// Should be a relative path to the root directory
+    /// of the api-docs.
+    current_dir_path: []const u8,
+    required_refs: *std.BufSet,
     number_as_string: bool,
     json_comment_buf: ?*std.ArrayList(u8),
 };
@@ -441,6 +453,8 @@ fn renderApiType(
 ) (@TypeOf(out_writer).Error || RenderApiTypeError)!void {
     const allocator = params.allocator;
     const render_stack = params.render_stack;
+    const required_refs = params.required_refs;
+    const current_dir_path = params.current_dir_path;
     const number_as_string = params.number_as_string;
     var maybe_json_comment_buf = params.json_comment_buf;
 
@@ -509,7 +523,12 @@ fn renderApiType(
 
                         try out_writer.print("{s}: ", .{std.zig.fmtId(prop_name)});
                         if (!is_required) try out_writer.writeAll("?");
-                        try writeRefPathAsZigNamespaceAccess(out_writer, ref);
+
+                        const resolved_ref = try std.fs.path.resolve(allocator, &.{ current_dir_path, ref });
+                        defer allocator.free(resolved_ref);
+
+                        try writeRefPathAsZigNamespaceAccess(out_writer, resolved_ref);
+                        try required_refs.insert(resolved_ref);
 
                         if (default_val != null) { // TODO: hate. how would I even implement this as-is. Probably need to make the model json data accessible here
                             std.log.err("Encountered default value for $ref'd field", .{});
@@ -563,7 +582,12 @@ fn renderApiType(
                             for (0..depth) |_| try out_writer.writeAll("[]const ");
 
                             if (try getRefFieldValue(items)) |ref| {
-                                try writeRefPathAsZigNamespaceAccess(out_writer, ref);
+                                const resolved_ref = try std.fs.path.resolve(allocator, &.{ current_dir_path, ref });
+                                defer allocator.free(resolved_ref);
+
+                                try writeRefPathAsZigNamespaceAccess(out_writer, resolved_ref);
+                                try required_refs.insert(resolved_ref);
+
                                 try out_writer.writeAll(",\n");
                                 continue;
                             }
