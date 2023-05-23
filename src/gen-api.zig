@@ -92,22 +92,23 @@ pub fn main() !void {
         , .{number_as_string_subst_decl_name});
 
         for (models_json.keys(), models_json.values()) |model_name, *value| {
+            const name = std.fs.path.stem(model_name);
             const json_obj: *const JsonObj = &value.object;
 
-            const model_basename = try allocator.dupe(u8, std.fs.path.stem(model_name));
-            errdefer allocator.free(model_basename);
-
             render_stack.clearRetainingCapacity();
-            try render_stack.append(.{ .type_decl = .{
-                .name = model_basename,
-                .json_obj = json_obj,
-            } });
-            try renderApiType(out_writer, .{
-                .allocator = allocator,
-                .render_stack = &render_stack,
-                .number_as_string = number_as_string,
-                .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
-            });
+            try renderApiTypeWith(
+                out_writer,
+                RenderStackCmd.TypeDecl{
+                    .name = name,
+                    .json_obj = json_obj,
+                },
+                RenderApiTypeParams{
+                    .allocator = allocator,
+                    .render_stack = &render_stack,
+                    .number_as_string = number_as_string,
+                    .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
+                },
+            );
         }
 
         try out_writer.writeAll("};\n\n");
@@ -260,17 +261,19 @@ pub fn main() !void {
                         }
 
                         render_stack.clearRetainingCapacity();
-                        try render_stack.append(RenderStackCmd{ .type_decl = .{
-                            .name = try allocator.dupe(u8, "RequestBody"),
-                            .json_obj = schema,
-                        } });
-
-                        try renderApiType(out_writer, .{
-                            .allocator = allocator,
-                            .render_stack = &render_stack,
-                            .number_as_string = number_as_string,
-                            .json_comment_buf = null,
-                        });
+                        try renderApiTypeWith(
+                            out_writer,
+                            RenderStackCmd.TypeDecl{
+                                .name = "RequestBody",
+                                .json_obj = schema,
+                            },
+                            RenderApiTypeParams{
+                                .allocator = allocator,
+                                .render_stack = &render_stack,
+                                .number_as_string = number_as_string,
+                                .json_comment_buf = null,
+                            },
+                        );
                     } else {
                         try out_writer.writeAll(empty_request_body_str);
                     }
@@ -297,16 +300,19 @@ pub fn main() !void {
                             .created,
                             => |tag| {
                                 render_stack.clearRetainingCapacity();
-                                try render_stack.append(RenderStackCmd{ .type_decl = .{
-                                    .name = try allocator.dupe(u8, @tagName(tag)),
-                                    .json_obj = try getContentApplicationJsonSchema(response_info),
-                                } });
-                                try renderApiType(out_writer, .{
-                                    .allocator = allocator,
-                                    .render_stack = &render_stack,
-                                    .number_as_string = number_as_string,
-                                    .json_comment_buf = null,
-                                });
+                                try renderApiTypeWith(
+                                    out_writer,
+                                    RenderStackCmd.TypeDecl{
+                                        .name = @tagName(tag),
+                                        .json_obj = try getContentApplicationJsonSchema(response_info),
+                                    },
+                                    RenderApiTypeParams{
+                                        .allocator = allocator,
+                                        .render_stack = &render_stack,
+                                        .number_as_string = number_as_string,
+                                        .json_comment_buf = null,
+                                    },
+                                );
                             },
                             .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
                             else => |tag| {
@@ -404,14 +410,34 @@ fn writeJsonAsComment(
     try util.writeLinesSurrounded(out_writer, comment_prefix, json_comment_buf.items, "\n");
 }
 
+inline fn renderApiTypeWith(
+    out_writer: anytype,
+    root: RenderStackCmd.TypeDecl,
+    params: RenderApiTypeParams,
+) (@TypeOf(out_writer).Error || RenderApiTypeError)!void {
+    assert(params.render_stack.items.len == 0);
+    try params.render_stack.ensureUnusedCapacity(1);
+
+    const duped_name = try params.allocator.dupe(u8, root.name);
+    errdefer params.allocator.free(duped_name);
+
+    params.render_stack.appendAssumeCapacity(.{ .type_decl = .{
+        .name = duped_name,
+        .json_obj = root.json_obj,
+    } });
+    return try renderApiType(out_writer, params);
+}
+
+const RenderApiTypeParams = struct {
+    render_stack: *std.ArrayList(RenderStackCmd),
+    allocator: std.mem.Allocator,
+    number_as_string: bool,
+    json_comment_buf: ?*std.ArrayList(u8),
+};
+
 fn renderApiType(
     out_writer: anytype,
-    params: struct {
-        allocator: std.mem.Allocator,
-        render_stack: *std.ArrayList(RenderStackCmd),
-        number_as_string: bool,
-        json_comment_buf: ?*std.ArrayList(u8),
-    },
+    params: RenderApiTypeParams,
 ) (@TypeOf(out_writer).Error || RenderApiTypeError)!void {
     const allocator = params.allocator;
     const render_stack = params.render_stack;
