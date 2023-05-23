@@ -842,19 +842,6 @@ fn getContentApplicationJsonSchema(json_obj: *const JsonObj) !*const JsonObj {
     return try getObjField(application_json, "schema", .object, null) orelse error.MissingSchemaField;
 }
 
-inline fn getFieldTagMismatchErrorName(comptime tag: @typeInfo(std.json.Value).Union.tag_type.?) []const u8 {
-    comptime return switch (tag) {
-        .null => "NonNullFieldValue",
-        .bool => "NonBoolFieldValue",
-        .integer => "NonIntegerFieldValue",
-        .float => "NonFloatFieldValue",
-        .number_string => "NonNumberStringFieldValue",
-        .string => "NonStringFieldValue",
-        .array => "NonArrayFieldValue",
-        .object => "NonObjectFieldValue",
-    };
-}
-
 inline fn getObjField(
     json_obj: *const JsonObj,
     comptime name: []const u8,
