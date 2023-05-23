@@ -236,7 +236,7 @@ pub fn main() !void {
 
                     if (json_as_comment) {
                         try out_writer.writeAll("// ```\n");
-                        try writeJsonAsComment(out_writer, path_method_info, "// ", &json_comment_buf);
+                        try writeJsonAsComment(out_writer, .{ .object = path_method_info.* }, "// ", &json_comment_buf);
                         try out_writer.writeAll("// ```\n");
                     }
 
@@ -398,13 +398,13 @@ const RenderApiTypeError = error{
 
 fn writeJsonAsComment(
     out_writer: anytype,
-    json_obj: *const JsonObj,
+    json_value: std.json.Value,
     comment_prefix: []const u8,
     json_comment_buf: *std.ArrayList(u8),
 ) !void {
     json_comment_buf.clearRetainingCapacity();
     try json_comment_buf.writer().print("{}", .{util.fmtJson(
-        .{ .object = json_obj.* },
+        json_value,
         std.json.StringifyOptions{ .whitespace = .{ .indent = .{ .space = 4 } } },
     )});
     try util.writeLinesSurrounded(out_writer, comment_prefix, json_comment_buf.items, "\n");
@@ -452,7 +452,7 @@ fn renderApiType(
 
                 if (maybe_json_comment_buf) |json_comment_buf| {
                     try out_writer.writeAll("// ```\n");
-                    try writeJsonAsComment(out_writer, decl.json_obj, "// ", json_comment_buf);
+                    try writeJsonAsComment(out_writer, .{ .object = decl.json_obj.* }, "// ", json_comment_buf);
                     try out_writer.writeAll("// ```\n");
                     maybe_json_comment_buf = null;
                 }
