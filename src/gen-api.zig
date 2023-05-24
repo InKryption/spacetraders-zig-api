@@ -103,22 +103,22 @@ pub fn main() !void {
                 const top_params: []TopLevelParam = try loop_arena.alloc(TopLevelParam, top_parameters.len);
                 errdefer loop_arena.free(top_params);
 
-                for (top_params, top_parameters) |*top_param, *top_parameter_val| {
-                    const top_parameter: *const JsonObj = switch (top_parameter_val.*) {
+                for (top_params, top_parameters) |*param, *parameter_val| {
+                    const parameter: *const JsonObj = switch (parameter_val.*) {
                         .object => |*object| object,
                         else => return error.NonObjectTopParam,
                     };
 
-                    if (top_parameter.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!top_parameter.contains("description"))) {
+                    if (parameter.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!parameter.contains("description"))) {
                         return error.UnhandledFields;
                     }
 
-                    top_param.* = .{
-                        .description = try getObjField(top_parameter, "description", .string, null),
-                        .in = (try getObjField(top_parameter, "in", .string, null)) orelse return error.MissingInParamField,
-                        .name = (try getObjField(top_parameter, "name", .string, null)) orelse return error.MissingNameParamField,
-                        .required = (try getObjField(top_parameter, "required", .bool, null)) orelse return error.MissingRequiredParamField,
-                        .schema = (try getObjField(top_parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
+                    param.* = .{
+                        .description = try getObjField(parameter, "description", .string, null),
+                        .in = (try getObjField(parameter, "in", .string, null)) orelse return error.MissingInParamField,
+                        .name = (try getObjField(parameter, "name", .string, null)) orelse return error.MissingNameParamField,
+                        .required = (try getObjField(parameter, "required", .bool, null)) orelse return error.MissingRequiredParamField,
+                        .schema = (try getObjField(parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
                     };
                 }
 
@@ -184,9 +184,42 @@ pub fn main() !void {
                     const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
                     const operation_id: []const u8 = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
 
+                    // TODO: deduplicate this from `TopLevelParam` somehow? Or at least
+                    // make a function that deduplicates the below procedure
+                    const MethodParam = struct {
+                        description: ?[]const u8,
+                        in: []const u8,
+                        name: []const u8,
+                        schema: *const JsonObj,
+                    };
+
                     // TODO: generate code representing method parameters (long over-due)
-                    const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
-                    _ = method_parameters;
+                    const method_params: []const MethodParam = blk: {
+                        const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
+                        const method_params: []MethodParam = try loop_arena.alloc(MethodParam, method_parameters.len);
+                        errdefer loop_arena.free(method_params);
+
+                        for (method_params, method_parameters) |*param, *parameter_val| {
+                            const parameter: *const JsonObj = switch (parameter_val.*) {
+                                .object => |*object| object,
+                                else => return error.NonObjectTopParam,
+                            };
+
+                            if (parameter.count() != @typeInfo(MethodParam).Struct.fields.len - @boolToInt(!parameter.contains("description"))) {
+                                return error.UnhandledFields;
+                            }
+
+                            param.* = .{
+                                .description = try getObjField(parameter, "description", .string, null),
+                                .in = (try getObjField(parameter, "in", .string, null)) orelse return error.MissingInParamField,
+                                .name = (try getObjField(parameter, "name", .string, null)) orelse return error.MissingNameParamField,
+                                .schema = (try getObjField(parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
+                            };
+                        }
+
+                        break :blk method_params;
+                    };
+                    defer loop_arena.free(method_params);
 
                     const op_name: []const u8 = blk: {
                         const op_name = try loop_arena.dupe(u8, operation_id);
