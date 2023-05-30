@@ -72,12 +72,19 @@ pub inline fn replaceScalarEnumTag(
     comptime replacement: u8,
 ) []const u8 {
     const Enum = @TypeOf(value);
-    inline for (@typeInfo(Enum).Enum.fields) |field| {
-        if (value == @intToEnum(Enum, field.value)) {
-            return comptime replaceScalarComptime(u8, field.name, needle, replacement);
-        }
-    }
-    unreachable;
+    const WithReplacement = comptime blk: {
+        const old = @typeInfo(Enum).Enum;
+        var fields = old.fields[0..].*;
+        for (&fields) |*field|
+            field.name = replaceScalarComptime(u8, field.name, needle, replacement);
+        break :blk @Type(.{ .Enum = .{
+            .tag_type = old.tag_type,
+            .is_exhaustive = old.is_exhaustive,
+            .decls = &.{},
+            .fields = &fields,
+        } });
+    };
+    return @tagName(@intToEnum(WithReplacement, @enumToInt(value)));
 }
 
 /// Returns the smallest integer type that can hold both from and to.
