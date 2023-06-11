@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 const util = @import("util.zig");
 const Params = @import("Params.zig");
 
-const NumberFormat = @import("number_format.zig").NumberFormat;
+const NumberFormat = @import("number-format.zig").NumberFormat;
 const number_format_subst_decl_name = "Number";
 
 const build_options = @import("build-options");

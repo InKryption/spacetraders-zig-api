@@ -2,7 +2,7 @@ const std = @import("std");
 const Build = std.Build;
 
 const util = @import("src/util.zig");
-const NumberFormat = @import("src/number_format.zig").NumberFormat;
+const NumberFormat = @import("src/number-format.zig").NumberFormat;
 
 pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
