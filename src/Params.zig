@@ -7,7 +7,7 @@ output_path: ?[]const u8 = null,
 number_format: NumberFormat = .number_string,
 json_as_comment: bool = false,
 
-const NumberFormat = @import("number_format.zig").NumberFormat;
+const NumberFormat = @import("number-format.zig").NumberFormat;
 
 const ParamId = std.meta.FieldEnum(Params);
 inline fn paramIsFlag(id: ParamId) bool {
