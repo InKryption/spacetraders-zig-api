@@ -34,7 +34,7 @@ pub fn build(b: *Build) void {
         "--apidocs-path",
         // zig fmt: on
     });
-    gen_types_exe_run.addFileSourceArg(cloned_api_docs_path);
+    gen_types_exe_run.addDirectorySourceArg(cloned_api_docs_path);
     const api_src_file = gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
 
     const exe_run_step = b.step("run", "Run gen-api.zig");
