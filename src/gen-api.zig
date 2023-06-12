@@ -833,7 +833,17 @@ const GetRefFieldValueError = error{
 };
 fn getRefFieldValue(json_obj: *const JsonObj) GetRefFieldValueError!?[]const u8 {
     const val = json_obj.get("$ref") orelse return null;
-    if (json_obj.count() != 1) return error.NotAlone;
+
+    // this is a couple of special-cases.
+    // not sure if there's a better way to handle this,
+    // but hopefully this is enough.
+    const expected_count = @as(usize, 1) +
+        @boolToInt(json_obj.contains("example")) +
+        @boolToInt(json_obj.contains("description"));
+    if (json_obj.count() != expected_count) {
+        std.debug.print("{}", .{util.fmtJson(.{ .object = json_obj.* }, .{})});
+        return error.NotAlone;
+    }
     const str = switch (val) {
         .string => |str| str,
         else => return error.NotAString,
