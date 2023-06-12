@@ -7,11 +7,6 @@ const Params = @import("Params.zig");
 const NumberFormat = @import("number-format.zig").NumberFormat;
 const number_format_subst_decl_name = "Number";
 
-const build_options = @import("build-options");
-pub const std_options = struct {
-    pub const log_level: std.log.Level = build_options.log_level;
-};
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
