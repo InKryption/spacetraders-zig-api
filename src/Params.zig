@@ -6,19 +6,18 @@ apidocs_path: ?[]const u8 = null,
 output_path: ?[]const u8 = null,
 number_format: NumberFormat = .number_string,
 json_as_comment: bool = false,
+log_level: std.log.Level = .warn,
 
 const NumberFormat = @import("number-format.zig").NumberFormat;
 
 const ParamId = std.meta.FieldEnum(Params);
 inline fn paramIsFlag(id: ParamId) bool {
     return switch (id) {
-        .apidocs_path,
-        .output_path,
-        => false,
-
+        .apidocs_path => false,
+        .output_path => false,
         .number_format => false,
-
         .json_as_comment => true,
+        .log_level => false,
     };
 }
 
@@ -110,7 +109,9 @@ pub fn parse(
                 };
             },
             inline //
-            .number_format => |tag| blk: {
+            .number_format,
+            .log_level,
+            => |tag| blk: {
                 const field_ptr = &@field(result, @tagName(tag));
                 const Enum = @TypeOf(field_ptr.*);
                 inline for (@typeInfo(Enum).Enum.fields) |enum_field| {

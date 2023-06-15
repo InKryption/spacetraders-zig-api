@@ -7,9 +7,21 @@ const Params = @import("Params.zig");
 const NumberFormat = @import("number-format.zig").NumberFormat;
 const number_format_subst_decl_name = "Number";
 
-const build_options = @import("build-options");
+var runtime_log_level: std.log.Level = .debug;
+
 pub const std_options = struct {
-    pub const log_level: std.log.Level = build_options.log_level;
+    pub const log_level: std.log.Level = .debug;
+    pub fn logFn(
+        comptime msg_level: std.log.Level,
+        comptime scope: @TypeOf(.enum_literal),
+        comptime fmt_str: []const u8,
+        args: anytype,
+    ) void {
+        if (@enumToInt(msg_level) < @enumToInt(runtime_log_level)) {
+            return;
+        }
+        std.log.defaultLog(msg_level, scope, fmt_str, args);
+    }
 };
 
 pub fn main() !void {
@@ -19,11 +31,27 @@ pub fn main() !void {
 
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
+    std.log.debug(
+        \\parameters: {{
+        \\    .apidocs_path = "{?s}",
+        \\    .output_path = "{?s}",
+        \\    .number_format = .{s},
+        \\    .json_as_comment = {},
+        \\    .log_level = .{s},
+        \\}}
+    , .{
+        params.apidocs_path,
+        params.output_path,
+        @tagName(params.number_format),
+        params.json_as_comment,
+        @tagName(params.log_level),
+    });
 
     const apidocs_path: []const u8 = params.apidocs_path orelse return error.MissingModelsParam;
     const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
     const number_format: NumberFormat = params.number_format;
     const json_as_comment: bool = params.json_as_comment;
+    runtime_log_level = params.log_level;
 
     const output_file = try std.fs.cwd().createFile(output_path, .{});
     defer output_file.close();
@@ -237,9 +265,12 @@ pub fn main() !void {
 
                     if (try getObjField(path_method_info, "summary", .string, null)) |summary| {
                         try util.writeLinesSurrounded(out_writer, "/// ", summary, "\n");
-                        try out_writer.writeAll("///\n");
                     }
-                    try writeStringFieldAsCommentIfAvailable(out_writer, path_method_info, "description");
+                    if (try getObjField(path_method_info, "description", .string, null)) |desc| {
+                        if (path_method_info.contains("summary"))
+                            try out_writer.writeAll("///\n");
+                        try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                    }
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
                     try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path)});
@@ -247,7 +278,10 @@ pub fn main() !void {
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                     const empty_request_body_str = "        pub const RequestBody = struct {};\n";
                     if (maybe_request_body) |request_body| blk: {
-                        try writeStringFieldAsCommentIfAvailable(out_writer, request_body, "description");
+                        if (try getObjField(request_body, "description", .string, null)) |desc| {
+                            try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                        }
+
                         const schema = try getContentApplicationJsonSchema(request_body);
                         if (schema.count() == 0) {
                             std.log.warn("Encountered empty RequestBody schema inside path '{s}'. Outputting as empty struct.", .{path});
@@ -430,11 +464,11 @@ const RenderApiTypeError = error{
     NonObjectProperty,
     DefaultValueTypeMismatch,
     NonStringDescriptionFieldValue,
+    NonStringExampleFieldValue,
 } || std.mem.Allocator.Error ||
     GetRefFieldValueError ||
     GetTypeFieldValueError ||
     GetNestedArrayChildError ||
-    WriteStringFieldAsCommentIfAvailableError ||
     WriteRefPathAsZigNamespaceAccessError ||
     WriteSimpleTypeError;
 
@@ -503,7 +537,10 @@ fn renderApiType(
                     maybe_json_comment_buf = null;
                 }
 
-                try writeStringFieldAsCommentIfAvailable(out_writer, decl.json_obj, "description");
+                if (try getObjField(decl.json_obj, "description", .string, null)) |desc| {
+                    try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                }
+
                 try out_writer.print("pub const {s} = ", .{std.zig.fmtId(decl.name)});
 
                 assert((getRefFieldValue(decl.json_obj) catch unreachable) == null); // I believe there's no logic that would lead to this
@@ -551,7 +588,13 @@ fn renderApiType(
                     } else false;
 
                     if (try getRefFieldValue(prop)) |ref| {
-                        try writeStringFieldAsCommentIfAvailable(out_writer, prop, "description");
+                        if (try getObjField(prop, "description", .string, null)) |desc| {
+                            try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                        }
+                        if (try getObjField(prop, "example", .string, null)) |example| {
+                            if (prop.contains("description")) try out_writer.writeAll("///\n/// Example:");
+                            try util.writeLinesSurrounded(out_writer, "/// ", example, "\n");
+                        }
 
                         try out_writer.print("{s}: ", .{std.zig.fmtId(prop_name)});
                         if (!is_required) try out_writer.writeAll("?");
@@ -594,10 +637,14 @@ fn renderApiType(
                         },
                         .boolean,
                         .array,
-                        => try writeStringFieldAsCommentIfAvailable(out_writer, prop, "description"),
+                        => if (try getObjField(prop, "description", .string, null)) |desc| {
+                            try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                        },
 
                         .string => if (!prop.contains("enum")) {
-                            try writeStringFieldAsCommentIfAvailable(out_writer, prop, "description");
+                            if (try getObjField(prop, "description", .string, null)) |desc| {
+                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                            }
                         },
                     }
 
@@ -629,6 +676,14 @@ fn renderApiType(
                             for (0..depth) |_| try out_writer.writeAll("[]const ");
 
                             if (try getRefFieldValue(items)) |ref| {
+                                if (try getObjField(items, "description", .string, null)) |desc| {
+                                    try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                                }
+                                if (try getObjField(items, "example", .string, null)) |example| {
+                                    if (prop.contains("description")) try out_writer.writeAll("///\n/// Example:");
+                                    try util.writeLinesSurrounded(out_writer, "/// ", example, "\n");
+                                }
+
                                 const resolved_ref = try std.fs.path.resolve(allocator, &.{ current_dir_path, ref });
                                 defer allocator.free(resolved_ref);
 
@@ -904,23 +959,6 @@ fn getNestedArrayChild(json_obj: *const JsonObj, depth: *usize) GetNestedArrayCh
             => return items,
         }
     }
-}
-
-const WriteStringFieldAsCommentIfAvailableError = error{
-    NonStringFieldValue,
-} || GetRefFieldValueError;
-inline fn writeStringFieldAsCommentIfAvailable(
-    out_writer: anytype,
-    json_obj: *const JsonObj,
-    field: []const u8,
-) (@TypeOf(out_writer).Error || WriteStringFieldAsCommentIfAvailableError)!void {
-    const desc_val = json_obj.get(field) orelse return;
-    const desc = switch (desc_val) {
-        .string => |str| str,
-        else => return error.NonStringFieldValue,
-    };
-    if (desc.len == 0) return;
-    try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
 }
 
 const GetContentApplicationJsonSchemaError = error{
