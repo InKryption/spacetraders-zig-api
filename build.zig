@@ -36,7 +36,12 @@ pub fn build(b: *Build) void {
         });
     }
 
-    localTesting(b, gen_types_exe, number_format orelse .number_string, json_as_comment orelse false);
+    localTesting(
+        b,
+        gen_types_exe,
+        number_format orelse .number_string,
+        json_as_comment orelse false,
+    );
 }
 
 fn localTesting(

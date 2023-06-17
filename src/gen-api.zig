@@ -372,6 +372,11 @@ pub fn main() !void {
             for (0..3) |_| if (loop_arena_state.reset(.retain_capacity)) break;
 
             const ref: []const u8 = (iter.next() orelse break).*;
+            defer {
+                required_model_refs.remove(ref);
+                iter = required_model_refs.iterator();
+            }
+
             if (finished_set.contains(ref)) continue;
             try finished_set.insert(ref);
 
@@ -397,9 +402,6 @@ pub fn main() !void {
                     .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
                 },
             );
-
-            required_model_refs.remove(ref);
-            iter = required_model_refs.iterator();
         }
 
         try out_writer.writeAll("};\n\n");
