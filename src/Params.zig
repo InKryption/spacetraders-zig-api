@@ -50,6 +50,18 @@ pub fn parse(
 ) ParseError!Params {
     const log = std.log.scoped(log_scope);
     var result: Params = .{};
+    errdefer inline for (@typeInfo(Params).Struct.fields) |field| {
+        switch (@typeInfo(field.type)) {
+            .Optional => |optional| switch (@typeInfo(optional.child)) {
+                .Pointer => allocator.free(@field(result, field.name) orelse &.{}),
+                else => @compileError("not handled: " ++ @typeName(field.type)),
+            },
+            .Pointer => allocator.free(@field(result, field.name)),
+            .Enum => {},
+            .Bool => {},
+            else => @compileError("not handled: " ++ @typeName(field.type)),
+        }
+    };
 
     while (true) {
         var maybe_next_tok: ?[]const u8 = null;
