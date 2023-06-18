@@ -2,71 +2,104 @@ const std = @import("std");
 const Build = std.Build;
 
 const util = @import("src/util.zig");
-const NumberFormat = @import("src/number-format.zig").NumberFormat;
+pub const NumberFormat = @import("src/number-format.zig").NumberFormat;
+
+pub const RunGeneratorArgs = struct {
+    number_format: NumberFormat,
+    json_as_comment: bool,
+    log_level: std.log.Level,
+    /// file source representing the spacetraders API spec folder
+    apidocs_dir: Build.FileSource,
+    /// name of the output file
+    output_name: []const u8 = "api.zig",
+};
+pub fn runGenerator(
+    /// assumed to be `b.addRunArtifact(b.dependency("<spacetraders alias>").artifact("gen-api"))`
+    generator: *Build.Step.Run,
+    args: RunGeneratorArgs,
+) Build.FileSource {
+    generator.addArg("--apidocs-path");
+    generator.addDirectorySourceArg(args.apidocs_dir);
+
+    generator.addArgs(&.{
+        "--number-format",   @tagName(util.ReplaceEnumTagScalar(NumberFormat, '_', '-').make(args.number_format)),
+        "--json-as-comment", if (args.json_as_comment) "true" else "false",
+        "--log-level",       @tagName(args.log_level),
+    });
+
+    return generator.addPrefixedOutputFileArg("--output-path=", args.output_name);
+}
 
 pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target = b.standardTargetOptions(.{});
 
-    const number_format = b.option(NumberFormat, "number_format", "Use '[]const u8' to represent number fields instead of 'f64'.");
-    const json_as_comment = b.option(bool, "json_as_comment", "Print json schema of types as comments on the outputted types.");
+    const number_format = b.option(NumberFormat, "number_format", "Use '[]const u8' to represent number fields instead of 'f64'.") orelse .number_string;
+    const json_as_comment = b.option(bool, "json_as_comment", "Print json schema of types as comments on the outputted types.") orelse false;
     const log_level = b.option(std.log.Level, "log_level", "Specifies the log level of the executable") orelse .warn;
 
-    const gen_types_exe = b.addExecutable(.{
+    const generate_api = b.addExecutable(.{
         .name = "gen-api",
         .root_source_file = Build.FileSource.relative("src/gen-api.zig"),
         .target = target,
         .optimize = optimize,
     });
-    b.installArtifact(gen_types_exe);
+    b.installArtifact(generate_api);
 
-    if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir| {
-        const gen_types_exe_run = b.addRunArtifact(gen_types_exe);
-        gen_types_exe_run.addArgs(&.{
-            "--number-format",   util.replaceScalarEnumTag(number_format orelse .number_string, '_', '-'),
-            "--json-as-comment", if (json_as_comment orelse false) "true" else "false",
-            "--log-level",       @tagName(log_level),
-            "--apidocs-path",    apidocs_dir,
+    const generated_api_src =
+        if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir|
+    blk: {
+        const generate_api_run = b.addRunArtifact(generate_api);
+        break :blk runGenerator(generate_api_run, .{
+            .number_format = number_format,
+            .json_as_comment = json_as_comment,
+            .log_level = log_level,
+            .apidocs_dir = .{ .path = apidocs_dir },
         });
-        const api_src_file = gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
+    } else b.addWriteFiles().add("error.zig",
+        \\comptime {
+        \\    @compileError("Pass the 'apidocs' build option in order to make the generated API available. Otherwise you should generate the API manually.");
+        \\}
+        \\
+    );
 
-        _ = b.addModule("api", Build.CreateModuleOptions{
-            .source_file = api_src_file,
-            .dependencies = &.{},
-        });
-    }
+    _ = b.addModule("api", Build.CreateModuleOptions{
+        .source_file = generated_api_src,
+        .dependencies = &.{},
+    });
 
     localTesting(
         b,
-        gen_types_exe,
-        number_format orelse .number_string,
-        json_as_comment orelse false,
+        generate_api,
+        number_format,
+        json_as_comment,
+        log_level,
     );
 }
 
 fn localTesting(
     b: *Build,
-    gen_types_exe: *Build.Step.Compile,
+    generate_api: *Build.Step.Compile,
     number_format: NumberFormat,
     json_as_comment: bool,
+    log_level: std.log.Level,
 ) void {
     const git_clone_api_docs = b.addSystemCommand(&.{
         "git",
         "clone",
         "https://github.com/SpaceTradersAPI/api-docs.git",
     });
-    const cloned_api_docs_path = git_clone_api_docs.addOutputFileArg("");
+    const apidocs_dir = git_clone_api_docs.addOutputFileArg("");
 
-    const test_gen_types_exe_run = b.addRunArtifact(gen_types_exe);
-    test_gen_types_exe_run.addArgs(&.{
-        "--number-format",   util.replaceScalarEnumTag(number_format, '_', '-'),
-        "--json-as-comment", if (json_as_comment) "true" else "false",
+    const generate_api_run = b.addRunArtifact(generate_api);
+    const api_src_file = runGenerator(generate_api_run, .{
+        .number_format = number_format,
+        .json_as_comment = json_as_comment,
+        .log_level = log_level,
+        .apidocs_dir = apidocs_dir,
     });
-    test_gen_types_exe_run.addArg("--apidocs-path");
-    test_gen_types_exe_run.addDirectorySourceArg(cloned_api_docs_path);
-
-    const api_src_file = test_gen_types_exe_run.addPrefixedOutputFileArg("--output-path=", "api.zig");
 
     const test_install = b.step("test-install", "Generate the API and install the file");
-    test_install.dependOn(&b.addInstallFile(api_src_file, "api.zig").step);
+    const install_file = b.addInstallFile(api_src_file, "api.zig");
+    test_install.dependOn(&install_file.step);
 }

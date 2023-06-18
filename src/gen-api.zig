@@ -17,10 +17,9 @@ pub const std_options = struct {
         comptime fmt_str: []const u8,
         args: anytype,
     ) void {
-        if (@enumToInt(msg_level) < @enumToInt(runtime_log_level)) {
-            return;
+        if (@enumToInt(msg_level) <= @enumToInt(runtime_log_level)) {
+            std.log.defaultLog(msg_level, scope, fmt_str, args);
         }
-        std.log.defaultLog(msg_level, scope, fmt_str, args);
     }
 };
 
@@ -31,6 +30,8 @@ pub fn main() !void {
 
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
+
+    runtime_log_level = params.log_level; // set log level before first log
     std.log.debug(
         \\parameters: {{
         \\    .apidocs_path = "{?s}",
@@ -51,7 +52,6 @@ pub fn main() !void {
     const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
     const number_format: NumberFormat = params.number_format;
     const json_as_comment: bool = params.json_as_comment;
-    runtime_log_level = params.log_level;
 
     const output_file = try std.fs.cwd().createFile(output_path, .{});
     defer output_file.close();

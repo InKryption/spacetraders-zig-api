@@ -66,25 +66,33 @@ fn replaceScalarComptimeImpl(
     return &result;
 }
 
-pub inline fn replaceScalarEnumTag(
-    value: anytype,
+pub fn ReplaceEnumTagScalar(
+    comptime T: type,
     comptime needle: u8,
     comptime replacement: u8,
-) []const u8 {
-    const Enum = @TypeOf(value);
-    const WithReplacement = comptime blk: {
-        const old = @typeInfo(Enum).Enum;
-        var fields = old.fields[0..].*;
-        for (&fields) |*field|
-            field.name = replaceScalarComptime(u8, field.name, needle, replacement);
-        break :blk @Type(.{ .Enum = .{
-            .tag_type = old.tag_type,
-            .is_exhaustive = old.is_exhaustive,
-            .decls = &.{},
-            .fields = &fields,
-        } });
+) type {
+    return struct {
+        pub const Original = T;
+        pub const WithReplacement = T: {
+            if (needle == replacement) break :T T;
+            const old = @typeInfo(T).Enum;
+            var fields = old.fields[0..].*;
+            for (&fields) |*field|
+                field.name = replaceScalarComptime(u8, field.name, needle, replacement);
+            break :T @Type(.{ .Enum = .{
+                .tag_type = old.tag_type,
+                .is_exhaustive = old.is_exhaustive,
+                .decls = &.{},
+                .fields = &fields,
+            } });
+        };
+        pub inline fn make(value: Original) WithReplacement {
+            return @intToEnum(WithReplacement, @enumToInt(value));
+        }
+        pub inline fn unmake(value: WithReplacement) Original {
+            return @intToEnum(Original, @enumToInt(value));
+        }
     };
-    return @tagName(@intToEnum(WithReplacement, @enumToInt(value)));
 }
 
 /// Returns the smallest integer type that can hold both from and to.
