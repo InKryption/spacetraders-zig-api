@@ -31,27 +31,31 @@ pub fn main() !void {
     const params: Params = try Params.parseCurrentProcess(allocator, .params);
     defer params.deinit(allocator);
 
-    runtime_log_level = params.log_level; // set log level before first log
+    runtime_log_level = params.log_level orelse return error.MissingLogLevelParam; // set log level before first log
     std.log.debug(
         \\parameters: {{
         \\    .apidocs_path = "{?s}",
         \\    .output_path = "{?s}",
-        \\    .number_format = .{s},
-        \\    .json_as_comment = {},
-        \\    .log_level = .{s},
+        \\    .number_format = {s},
+        \\    .json_as_comment = {?},
+        \\    .log_level = {s},
         \\}}
     , .{
         params.apidocs_path,
         params.output_path,
-        @tagName(params.number_format),
+        if (params.number_format) |nfmt| switch (nfmt) {
+            inline else => |tag| "." ++ @tagName(tag),
+        } else "null",
         params.json_as_comment,
-        @tagName(params.log_level),
+        if (params.log_level) |ll| switch (ll) {
+            inline else => |tag| "." ++ @tagName(tag),
+        } else "null",
     });
 
     const apidocs_path: []const u8 = params.apidocs_path orelse return error.MissingModelsParam;
     const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
-    const number_format: NumberFormat = params.number_format;
-    const json_as_comment: bool = params.json_as_comment;
+    const number_format: NumberFormat = params.number_format orelse return error.MissingNumberFormatParam;
+    const json_as_comment: bool = params.json_as_comment orelse return error.MissingJsonAsCommentParam;
 
     const output_file = try std.fs.cwd().createFile(output_path, .{});
     defer output_file.close();
@@ -174,7 +178,7 @@ pub fn main() !void {
 
                     try zig_fmt_path.appendSlice("{[");
                     try zig_fmt_path.appendSlice(param_name);
-                    try zig_fmt_path.appendSlice("]s}"); // assume string parameter
+                    try zig_fmt_path.appendSlice("]}");
 
                     const param: TopLevelParam = for (top_params) |param| {
                         if (std.mem.eql(u8, param.name, param_name)) break param;

@@ -4,9 +4,9 @@ const util = @import("util.zig");
 const Params = @This();
 apidocs_path: ?[]const u8 = null,
 output_path: ?[]const u8 = null,
-number_format: NumberFormat = .number_string,
-json_as_comment: bool = false,
-log_level: std.log.Level = .warn,
+number_format: ?NumberFormat = null,
+json_as_comment: ?bool = null,
+log_level: ?std.log.Level = null,
 
 const NumberFormat = @import("number-format.zig").NumberFormat;
 
@@ -51,18 +51,7 @@ pub fn parse(
 ) ParseError!Params {
     const log_err = std.log.scoped(log_scope).err;
     var result: Params = .{};
-    errdefer inline for (@typeInfo(Params).Struct.fields) |field| {
-        switch (@typeInfo(field.type)) {
-            .Optional => |optional| switch (@typeInfo(optional.child)) {
-                .Pointer => allocator.free(@field(result, field.name) orelse &.{}),
-                else => @compileError("not handled: " ++ @typeName(field.type)),
-            },
-            .Pointer => allocator.free(@field(result, field.name)),
-            .Enum => {},
-            .Bool => {},
-            else => @compileError("not handled: " ++ @typeName(field.type)),
-        }
-    };
+    errdefer result.deinit(allocator);
 
     while (true) {
         var maybe_next_tok: ?[]const u8 = null;
@@ -104,7 +93,7 @@ pub fn parse(
             .output_path,
             => |tag| {
                 const field_ptr = &@field(result, @tagName(tag));
-                const new_slice = try allocator.realloc(@constCast(field_ptr.* orelse ""), next_tok.len);
+                const new_slice = try allocator.realloc(@constCast(field_ptr.* orelse &.{}), next_tok.len);
                 @memcpy(new_slice, next_tok);
                 field_ptr.* = new_slice;
             },
@@ -125,7 +114,7 @@ pub fn parse(
             .log_level,
             => |tag| {
                 const field_ptr = &@field(result, @tagName(tag));
-                const Enum = @TypeOf(field_ptr.*);
+                const Enum = @TypeOf(field_ptr.*.?);
                 const kebab_enum = util.ReplaceEnumTagScalar(Enum, '_', '-');
                 if (std.meta.stringToEnum(kebab_enum.WithReplacement, next_tok)) |kebab_tag| {
                     field_ptr.* = kebab_enum.unmake(kebab_tag);
