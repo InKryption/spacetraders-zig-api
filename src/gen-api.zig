@@ -333,37 +333,41 @@ pub fn main() !void {
                                 },
                             );
                         }
-
-                        try out_writer.writeAll(
-                            \\        pub fn format(
-                            \\            self: @This(),
-                            \\            comptime fmt_str: []const u8,
-                            \\            options: @import("std").fmt.FormatOptions,
-                            \\            writer: anytype,
-                            \\        ) !void {
-                            \\            _ = fmt_str;
-                            \\            _ = options;
-                            \\
-                        );
-                        for (path_items) |item| {
-                            if (item[0] == '{') {
-                                assert(item[item.len - 1] == '}');
-                                try out_writer.print(
-                                    \\            try writer.print("/{{s}}", .{{self.{s}}});
-                                    \\
-                                , .{std.zig.fmtId(item[1 .. item.len - 1])});
-                            } else {
-                                try out_writer.print(
-                                    \\            try writer.writeAll("/{}");
-                                    \\
-                                , .{std.zig.fmtEscapes(item)});
-                            }
-                        }
-                        try out_writer.writeAll(
-                            \\        }
-                            \\
-                        );
                     }
+                    try out_writer.writeAll(
+                        \\        pub fn format(
+                        \\            self: @This(),
+                        \\            comptime fmt_str: []const u8,
+                        \\            options: @import("std").fmt.FormatOptions,
+                        \\            writer: anytype,
+                        \\        ) !void {
+                        \\            _ = fmt_str;
+                        \\            _ = options;
+                        \\
+                    );
+                    if (top_params.len == 0) try out_writer.writeAll(
+                        \\            _ = self;
+                        \\            try writer.writeAll("/");
+                        \\
+                    );
+                    for (path_items) |item| {
+                        if (item[0] == '{') {
+                            assert(item[item.len - 1] == '}');
+                            try out_writer.print(
+                                \\            try writer.print("/{{s}}", .{{self.{s}}});
+                                \\
+                            , .{std.zig.fmtId(item[1 .. item.len - 1])});
+                        } else {
+                            try out_writer.print(
+                                \\            try writer.writeAll("/{}");
+                                \\
+                            , .{std.zig.fmtEscapes(item)});
+                        }
+                    }
+                    try out_writer.writeAll(
+                        \\        }
+                        \\
+                    );
                     try out_writer.writeAll("};\n");
 
                     try out_writer.writeAll("    pub const Queries = struct {");
@@ -413,41 +417,46 @@ pub fn main() !void {
                                 .json_comment_buf = null,
                             });
                         }
-
-                        try out_writer.writeAll(
-                            \\        pub fn format(
-                            \\            self: @This(),
-                            \\            comptime fmt_str: []const u8,
-                            \\            options: @import("std").fmt.FormatOptions,
-                            \\            writer: anytype,
-                            \\        ) !void {
-                            \\            _ = fmt_str;
-                            \\            _ = options;
-                            \\            var need_sep = false;
-                            \\
-                        );
-                        for (method_params, 0..) |param, i| {
-                            try out_writer.print(
-                                \\            if (self.{s}) |val| {{
-                                \\
-                            , .{std.zig.fmtId(param.name)});
-                            if (i != 0) try out_writer.writeAll(
-                                \\                if (need_sep) {
-                                \\                    try writer.writeAll("&");
-                                \\                } else need_sep = true;
-                                \\
-                            ) else try out_writer.writeAll(
-                                \\                need_sep = true;
-                            );
-
-                            try out_writer.print(
-                                \\                try writer.print("{}={{any}}", .{{val}});
-                                \\            }}
-                            , .{std.zig.fmtEscapes(param.name)});
-                        }
-
-                        try out_writer.writeAll("        }\n");
                     }
+                    try out_writer.writeAll(
+                        \\        pub fn format(
+                        \\            self: @This(),
+                        \\            comptime fmt_str: []const u8,
+                        \\            options: @import("std").fmt.FormatOptions,
+                        \\            writer: anytype,
+                        \\        ) !void {
+                        \\            _ = fmt_str;
+                        \\            _ = options;
+                        \\
+                    );
+                    if (method_params.len != 0) try out_writer.writeAll(
+                        \\            var need_sep = false;
+                        \\
+                    ) else try out_writer.writeAll(
+                        \\            _ = self;
+                        \\            _ = writer;
+                        \\
+                    );
+                    for (method_params, 0..) |param, i| {
+                        try out_writer.print(
+                            \\            if (self.{s}) |val| {{
+                            \\
+                        , .{std.zig.fmtId(param.name)});
+                        if (i != 0) try out_writer.writeAll(
+                            \\                if (need_sep) {
+                            \\                    try writer.writeAll("&");
+                            \\                } else need_sep = true;
+                            \\
+                        ) else try out_writer.writeAll(
+                            \\                need_sep = true;
+                        );
+
+                        try out_writer.print(
+                            \\                try writer.print("{}={{any}}", .{{val}});
+                            \\            }}
+                        , .{std.zig.fmtEscapes(param.name)});
+                    }
+                    try out_writer.writeAll("        }\n");
                     try out_writer.writeAll("    };\n");
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
