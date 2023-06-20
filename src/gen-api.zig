@@ -126,7 +126,6 @@ pub fn main() !void {
                 .object => |*object| object,
                 else => return error.NonObjectPathField,
             };
-
             const top_params: []const TopLevelParam = blk: {
                 const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
                 const top_params: []TopLevelParam = try loop_arena.alloc(TopLevelParam, top_parameters.len);
@@ -150,60 +149,44 @@ pub fn main() !void {
                         .schema = (try getObjField(parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
                     };
                 }
-
                 break :blk top_params;
             };
             defer loop_arena.free(top_params);
 
-            const zig_fmt_path: []const u8 = blk: {
-                var zig_fmt_path = std.ArrayList(u8).init(loop_arena);
-                defer zig_fmt_path.deinit();
+            const path_items: []const []const u8 = blk: {
+                var path_items = std.ArrayList([]const u8).init(loop_arena);
+                defer path_items.deinit();
 
-                var path_iter = std.mem.tokenize(u8, path, "/");
+                var path_iter = std.mem.tokenizeScalar(u8, path, '/');
                 while (path_iter.next()) |component| {
+                    // should we actually handle cases like 'foo//bar' with `std.mem.splitScalar`?
                     assert(component.len >= 1);
-                    try zig_fmt_path.append('/');
-                    if (!std.mem.startsWith(u8, component, "{")) {
-                        try zig_fmt_path.appendSlice(component);
-                        continue;
-                    }
-                    if (!std.mem.endsWith(u8, component, "}")) {
+                    try path_items.append(component);
+
+                    if (component[0] != '{') continue;
+                    if (component[component.len - 1] != '}') {
                         std.log.err("Unclosed brace in path '{s}'", .{path});
                         return error.UnclosedBraceInPath;
                     }
                     const param_name = component[1 .. component.len - 1];
 
-                    try zig_fmt_path.appendSlice("{[");
-                    try zig_fmt_path.appendSlice(param_name);
-                    try zig_fmt_path.appendSlice("]}");
-
                     // TODO: do more with .schema field?
                     const param: TopLevelParam = for (top_params) |param| {
-                        if (std.mem.eql(u8, param.name, param_name)) break param;
+                        if (!std.mem.eql(u8, param.name, param_name)) continue;
+                        break param;
                     } else {
                         std.log.err("Found substitution '{s}' in path '{s}' which is not defined as a parameter", .{ param_name, path });
                         return error.UnboundSubstitutionInPath;
                     };
-                    if (!std.mem.eql(u8, param.in, "path")) {
-                        return error.NonPathTopLevelParameter;
-                    }
-                    if (!param.required) {
-                        return error.OptionalPathParameter;
-                    }
-
+                    if (!std.mem.eql(u8, param.in, "path")) return error.NonPathTopLevelParameter;
+                    if (!param.required) return error.OptionalPathParameter;
                     const data_type = try getTypeFieldValue(param.schema);
-                    if (data_type != .string) {
-                        return error.NonStringPathParameter;
-                    }
+                    if (data_type != .string) return error.NonStringPathParameter;
                 }
 
-                if (zig_fmt_path.items.len == 0) {
-                    try zig_fmt_path.append('/');
-                }
-
-                break :blk try zig_fmt_path.toOwnedSlice();
+                break :blk try path_items.toOwnedSlice();
             };
-            defer loop_arena.free(zig_fmt_path);
+            defer loop_arena.free(path_items);
 
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
                 cont: { // <- just a hack to get around not being able to do runtime 'continue'
@@ -275,12 +258,113 @@ pub fn main() !void {
                     }
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
-                    try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path)});
+                    try out_writer.print(
+                        \\    /// '{s}'
+                        \\    pub const PathFmt = struct {{
+                        \\
+                    , .{path});
 
-                    try out_writer.print("    pub const path_fmt_query = \"{}", .{std.zig.fmtEscapes(zig_fmt_path)});
-                    if (method_params.len != 0)
-                        try out_writer.writeAll("?{[query]}");
-                    try out_writer.writeAll("\";\n");
+                    if (top_params.len != 0) {
+                        const ListEntry = struct { name: []const u8, schema: *const JsonObj };
+                        var list = try std.ArrayList(ListEntry).initCapacity(allocator, top_params.len);
+                        defer for (list.items) |entry| {
+                            allocator.free(entry.name);
+                        } else list.deinit();
+
+                        for (top_params) |param| {
+                            if (!std.mem.eql(u8, param.in, "path")) {
+                                std.log.err("Unhandled top level parameter which isn't in the path '{s}'.", .{param.name});
+                                continue;
+                            }
+                            if (param.description) |desc| {
+                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                            }
+                            try out_writer.print(
+                                \\        {s}: 
+                            , .{std.zig.fmtId(param.name)});
+                            if (!param.required) try out_writer.writeAll("?");
+
+                            var decl_name = try std.mem.concat(allocator, u8, &.{
+                                &.{std.ascii.toUpper(param.name[0])},
+                                param.name[1..],
+                            });
+                            defer allocator.free(decl_name);
+
+                            switch (try getTypeFieldValue(param.schema)) {
+                                .object => {},
+                                .array => {},
+                                .string => if (!param.schema.contains("enum")) {
+                                    try out_writer.writeAll("[]const u8,\n");
+                                    continue;
+                                },
+                                inline //
+                                .number,
+                                .integer,
+                                .boolean,
+                                => |itag| {
+                                    try writeSimpleType(out_writer, itag, param.schema);
+                                    continue;
+                                },
+                            }
+                            try out_writer.print("{s},\n", .{std.zig.fmtId(decl_name)});
+                            list.appendAssumeCapacity(.{
+                                .name = decl_name,
+                                .schema = param.schema,
+                            });
+                            decl_name = &.{}; // make freeing a noop out to avoid UAF
+                        }
+                        try out_writer.writeAll("\n");
+
+                        std.mem.reverse(ListEntry, list.items); // pop in reverse order to retain the original order
+                        while (list.popOrNull()) |entry| {
+                            render_stack.clearRetainingCapacity();
+                            try render_stack.append(.{ .type_decl = .{
+                                .name = entry.name,
+                                .json_obj = entry.schema,
+                            } });
+                            try renderApiType(
+                                out_writer,
+                                RenderApiTypeParams{
+                                    .allocator = allocator,
+                                    .render_stack = &render_stack,
+                                    .current_dir_path = "./reference",
+                                    .required_refs = &required_model_refs,
+                                    .json_comment_buf = null,
+                                },
+                            );
+                        }
+
+                        try out_writer.writeAll(
+                            \\        pub fn format(
+                            \\            self: @This(),
+                            \\            comptime fmt_str: []const u8,
+                            \\            options: @import("std").fmt.FormatOptions,
+                            \\            writer: anytype,
+                            \\        ) !void {
+                            \\            _ = fmt_str;
+                            \\            _ = options;
+                            \\
+                        );
+                        for (path_items) |item| {
+                            if (item[0] == '{') {
+                                assert(item[item.len - 1] == '}');
+                                try out_writer.print(
+                                    \\            try writer.print("/{{s}}", .{{self.{s}}});
+                                    \\
+                                , .{std.zig.fmtId(item[1 .. item.len - 1])});
+                            } else {
+                                try out_writer.print(
+                                    \\            try writer.writeAll("/{}");
+                                    \\
+                                , .{std.zig.fmtEscapes(item)});
+                            }
+                        }
+                        try out_writer.writeAll(
+                            \\        }
+                            \\
+                        );
+                    }
+                    try out_writer.writeAll("};\n");
 
                     try out_writer.writeAll("    pub const Queries = struct {");
                     if (method_params.len != 0) {
@@ -316,7 +400,7 @@ pub fn main() !void {
                         try out_writer.writeAll("\n");
                         std.mem.reverse(ParamEntry, list.items); // reverse so the first one popped is the same as the first field
                         while (list.popOrNull()) |entry| {
-                            render_stack.shrinkRetainingCapacity(0);
+                            render_stack.clearRetainingCapacity();
                             try render_stack.append(RenderStackCmd{ .type_decl = .{
                                 .name = entry.name,
                                 .json_obj = entry.json_obj,
@@ -894,7 +978,11 @@ fn writeSimpleType(
 ) (@TypeOf(out_writer).Error || WriteSimpleTypeError)!void {
     switch (tag) {
         .string => {
-            const enum_list: []const std.json.Value = (try getObjField(json_obj, "enum", .array, null) orelse return).items;
+            const enum_list: []const std.json.Value = if (try getObjField(json_obj, "enum", .array, null)) |array|
+                array.items
+            else
+                return;
+
             try out_writer.writeAll("enum {\n");
             for (enum_list) |val| {
                 const str = switch (val) {
