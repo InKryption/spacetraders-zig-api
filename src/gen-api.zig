@@ -95,19 +95,16 @@ pub fn main() !void {
     defer loop_arena_state.deinit();
     const loop_arena = loop_arena_state.allocator();
 
-    var json_parser = std.json.Parser.init(allocator, .alloc_if_needed);
-    defer json_parser.deinit();
-
     { // write reference
         try out_writer.writeAll("pub const ref = struct {\n");
 
         const ref_json_content = try apidocs_dir.readFileAlloc(allocator, "reference/SpaceTraders.json", 1 << 21);
         defer allocator.free(ref_json_content);
 
-        var ref_json_root = try json_parser.parse(ref_json_content);
+        var ref_json_root = try std.json.parseFromSlice(std.json.Value, allocator, ref_json_content, .{});
         defer ref_json_root.deinit();
 
-        const ref_obj: *const JsonObj = switch (ref_json_root.root) {
+        const ref_obj: *const JsonObj = switch (ref_json_root.value) {
             .object => |*object| object,
             else => return error.NonObjectReferenceFile,
         };
@@ -180,6 +177,7 @@ pub fn main() !void {
                     try zig_fmt_path.appendSlice(param_name);
                     try zig_fmt_path.appendSlice("]}");
 
+                    // TODO: do more with .schema field?
                     const param: TopLevelParam = for (top_params) |param| {
                         if (std.mem.eql(u8, param.name, param_name)) break param;
                     } else {
@@ -278,6 +276,95 @@ pub fn main() !void {
                     try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
                     try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
                     try out_writer.print("    pub const path_fmt = \"{}\";\n", .{std.zig.fmtEscapes(zig_fmt_path)});
+
+                    try out_writer.print("    pub const path_fmt_query = \"{}", .{std.zig.fmtEscapes(zig_fmt_path)});
+                    if (method_params.len != 0)
+                        try out_writer.writeAll("?{[query]}");
+                    try out_writer.writeAll("\";\n");
+
+                    try out_writer.writeAll("    pub const Queries = struct {");
+                    if (method_params.len != 0) {
+                        const ParamEntry = struct { name: []const u8, json_obj: *const JsonObj };
+                        var list = try std.ArrayList(ParamEntry).initCapacity(loop_arena, method_params.len);
+                        defer {
+                            for (list.items) |entry| {
+                                loop_arena.free(entry.name);
+                            }
+                            list.deinit();
+                        }
+
+                        for (method_params, 0..) |param, i| {
+                            if (param.description) |desc| {
+                                if (i == 0) try out_writer.writeAll("\n");
+                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                            }
+                            try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
+
+                            // freed by `renderApiType` or in the arraylist deinit on error
+                            const new_decl_name = try std.mem.concat(loop_arena, u8, &.{
+                                &.{std.ascii.toUpper(param.name[0])},
+                                param.name[1..],
+                            });
+
+                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
+                            try out_writer.writeAll(",\n");
+                            list.appendAssumeCapacity(.{
+                                .name = new_decl_name,
+                                .json_obj = param.schema,
+                            });
+                        }
+                        try out_writer.writeAll("\n");
+                        std.mem.reverse(ParamEntry, list.items); // reverse so the first one popped is the same as the first field
+                        while (list.popOrNull()) |entry| {
+                            render_stack.shrinkRetainingCapacity(0);
+                            try render_stack.append(RenderStackCmd{ .type_decl = .{
+                                .name = entry.name,
+                                .json_obj = entry.json_obj,
+                            } });
+                            try renderApiType(out_writer, RenderApiTypeParams{
+                                .allocator = loop_arena,
+                                .render_stack = &render_stack,
+                                .current_dir_path = "./reference",
+                                .required_refs = &required_model_refs,
+                                .json_comment_buf = null,
+                            });
+                        }
+
+                        try out_writer.writeAll(
+                            \\        pub fn format(
+                            \\            self: @This(),
+                            \\            comptime fmt_str: []const u8,
+                            \\            options: @import("std").fmt.FormatOptions,
+                            \\            writer: anytype,
+                            \\        ) !void {
+                            \\            _ = fmt_str;
+                            \\            _ = options;
+                            \\            var need_sep = false;
+                            \\
+                        );
+                        for (method_params, 0..) |param, i| {
+                            try out_writer.print(
+                                \\            if (self.{s}) |val| {{
+                                \\
+                            , .{std.zig.fmtId(param.name)});
+                            if (i != 0) try out_writer.writeAll(
+                                \\                if (need_sep) {
+                                \\                    try writer.writeAll("&");
+                                \\                } else need_sep = true;
+                                \\
+                            ) else try out_writer.writeAll(
+                                \\                need_sep = true;
+                            );
+
+                            try out_writer.print(
+                                \\                try writer.print("{}={{any}}", .{{val}});
+                                \\            }}
+                            , .{std.zig.fmtEscapes(param.name)});
+                        }
+
+                        try out_writer.writeAll("        }\n");
+                    }
+                    try out_writer.writeAll("    };\n");
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                     const empty_request_body_str = "        pub const RequestBody = struct {};\n";
@@ -387,16 +474,18 @@ pub fn main() !void {
             const model_file_contents = try apidocs_dir.readFileAlloc(loop_arena, ref, 1 << 21);
             defer loop_arena.free(model_file_contents);
 
-            json_parser.reset();
-            var model_json = try json_parser.parse(model_file_contents);
-            defer model_json.deinit();
+            // use leaky function with loop_arena
+            const model_json = try std.json.parseFromSliceLeaky(std.json.Value, loop_arena, model_file_contents, .{});
 
             render_stack.clearRetainingCapacity();
             try renderApiTypeWith(
                 out_writer,
                 RenderStackCmd.TypeDecl{
                     .name = std.fs.path.stem(ref),
-                    .json_obj = &model_json.root.object,
+                    .json_obj = switch (model_json) {
+                        .object => |*obj| obj,
+                        else => return error.NonObjectModelFile,
+                    },
                 },
                 RenderApiTypeParams{
                     .allocator = allocator,
