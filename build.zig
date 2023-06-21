@@ -74,6 +74,8 @@ pub fn build(b: *Build) void {
         number_format,
         json_as_comment,
         log_level,
+        target,
+        optimize,
     );
 }
 
@@ -83,6 +85,8 @@ fn localTesting(
     number_format: NumberFormat,
     json_as_comment: bool,
     log_level: std.log.Level,
+    target: std.zig.CrossTarget,
+    optimize: std.builtin.OptimizeMode,
 ) void {
     const git_clone_api_docs = b.addSystemCommand(&.{
         "git",
@@ -102,4 +106,17 @@ fn localTesting(
     const test_install = b.step("test-install", "Generate the API and install the file");
     const install_file = b.addInstallFile(api_src_file, "api.zig");
     test_install.dependOn(&install_file.step);
+
+    const test_exe = b.addTest(Build.TestOptions{
+        .root_source_file = Build.FileSource.relative("src/test-api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_exe.addAnonymousModule("api", Build.CreateModuleOptions{
+        .source_file = api_src_file,
+    });
+
+    const run_test_exe = b.addRunArtifact(test_exe);
+    const test_api_step = b.step("test-api", "Test the API");
+    test_api_step.dependOn(&run_test_exe.step);
 }

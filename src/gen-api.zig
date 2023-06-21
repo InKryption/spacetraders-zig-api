@@ -303,6 +303,7 @@ pub fn main() !void {
                                 .boolean,
                                 => |itag| {
                                     try writeSimpleType(out_writer, itag, param.schema);
+                                    try out_writer.writeAll(",\n");
                                     continue;
                                 },
                             }
@@ -341,45 +342,43 @@ pub fn main() !void {
                         \\            options: @import("std").fmt.FormatOptions,
                         \\            writer: anytype,
                         \\        ) !void {
-                        \\            _ = fmt_str;
-                        \\            _ = options;
                         \\
                     );
                     if (top_params.len == 0) try out_writer.writeAll(
                         \\            _ = self;
+                        \\
+                    );
+                    try out_writer.writeAll(
+                        \\            _ = fmt_str;
+                        \\            _ = options;
+                        \\
+                    );
+                    if (path_items.len == 0) try out_writer.writeAll(
                         \\            try writer.writeAll("/");
                         \\
                     );
                     for (path_items) |item| {
-                        if (item[0] == '{') {
-                            assert(item[item.len - 1] == '}');
-                            try out_writer.print(
-                                \\            try writer.print("/{{s}}", .{{self.{s}}});
-                                \\
-                            , .{std.zig.fmtId(item[1 .. item.len - 1])});
-                        } else {
-                            try out_writer.print(
-                                \\            try writer.writeAll("/{}");
-                                \\
-                            , .{std.zig.fmtEscapes(item)});
-                        }
+                        assert(item[0] != '{' or item[item.len - 1] == '}');
+                        if (item[0] == '{') try out_writer.print(
+                            \\            try writer.print("/{{s}}", .{{self.{s}}});
+                            \\
+                        , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
+                            \\            try writer.writeAll("/{}");
+                            \\
+                        , .{std.zig.fmtEscapes(item)});
                     }
                     try out_writer.writeAll(
                         \\        }
+                        \\    };
+                        \\    pub const QueryFmt = struct {
                         \\
                     );
-                    try out_writer.writeAll("};\n");
-
-                    try out_writer.writeAll("    pub const Queries = struct {");
                     if (method_params.len != 0) {
                         const ParamEntry = struct { name: []const u8, json_obj: *const JsonObj };
                         var list = try std.ArrayList(ParamEntry).initCapacity(loop_arena, method_params.len);
-                        defer {
-                            for (list.items) |entry| {
-                                loop_arena.free(entry.name);
-                            }
-                            list.deinit();
-                        }
+                        defer for (list.items) |entry| {
+                            loop_arena.free(entry.name);
+                        } else list.deinit();
 
                         for (method_params, 0..) |param, i| {
                             if (param.description) |desc| {
@@ -389,17 +388,37 @@ pub fn main() !void {
                             try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
 
                             // freed by `renderApiType` or in the arraylist deinit on error
-                            const new_decl_name = try std.mem.concat(loop_arena, u8, &.{
+                            var new_decl_name = try std.mem.concat(loop_arena, u8, &.{
                                 &.{std.ascii.toUpper(param.name[0])},
                                 param.name[1..],
                             });
+                            defer loop_arena.free(new_decl_name);
+
+                            switch (try getTypeFieldValue(param.schema)) {
+                                .object => {},
+                                .array => {},
+                                .string => if (!param.schema.contains("enum")) {
+                                    try out_writer.writeAll("[]const u8 = null,\n");
+                                    continue;
+                                },
+                                inline //
+                                .number,
+                                .integer,
+                                .boolean,
+                                => |itag| {
+                                    try writeSimpleType(out_writer, itag, param.schema);
+                                    try out_writer.writeAll(" = null,\n");
+                                    continue;
+                                },
+                            }
 
                             try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
-                            try out_writer.writeAll(",\n");
+                            try out_writer.writeAll(" = null,\n");
                             list.appendAssumeCapacity(.{
                                 .name = new_decl_name,
                                 .json_obj = param.schema,
                             });
+                            new_decl_name = &.{}; // set to empty to avoid UAF
                         }
                         try out_writer.writeAll("\n");
                         std.mem.reverse(ParamEntry, list.items); // reverse so the first one popped is the same as the first field
@@ -425,39 +444,49 @@ pub fn main() !void {
                         \\            options: @import("std").fmt.FormatOptions,
                         \\            writer: anytype,
                         \\        ) !void {
-                        \\            _ = fmt_str;
-                        \\            _ = options;
                         \\
                     );
-                    if (method_params.len != 0) try out_writer.writeAll(
-                        \\            var need_sep = false;
+                    if (method_params.len == 0) try out_writer.writeAll(
+                        \\            _ = self;
+                        \\            _ = fmt_str;
+                        \\            _ = options;
+                        \\            _ = writer;
                         \\
                     ) else try out_writer.writeAll(
-                        \\            _ = self;
-                        \\            _ = writer;
+                        \\            _ = fmt_str;
+                        \\            _ = options;
+                        \\            var need_sep = false;
                         \\
                     );
                     for (method_params, 0..) |param, i| {
-                        try out_writer.print(
+                        if (i == 0) try out_writer.print(
                             \\            if (self.{s}) |val| {{
-                            \\
-                        , .{std.zig.fmtId(param.name)});
-                        if (i != 0) try out_writer.writeAll(
-                            \\                if (need_sep) {
-                            \\                    try writer.writeAll("&");
-                            \\                } else need_sep = true;
-                            \\
-                        ) else try out_writer.writeAll(
                             \\                need_sep = true;
-                        );
-
-                        try out_writer.print(
-                            \\                try writer.print("{}={{any}}", .{{val}});
+                            \\                try writer.print("?{}={{any}}", .{{val}});
                             \\            }}
-                        , .{std.zig.fmtEscapes(param.name)});
+                        , .{
+                            std.zig.fmtId(param.name),
+                            std.zig.fmtEscapes(param.name),
+                        }) else try out_writer.print(
+                            \\            if (self.{0s}) |val| {{
+                            \\                if (need_sep) {{
+                            \\                    try writer.print("&{}={{any}}", .{{val}});
+                            \\                }} else {{
+                            \\                    need_sep = true;
+                            \\                    try writer.print("?{}={{any}}", .{{val}});
+                            \\                }}
+                            \\            }}
+                            \\
+                        , .{
+                            std.zig.fmtId(param.name),
+                            std.zig.fmtEscapes(param.name),
+                        });
                     }
-                    try out_writer.writeAll("        }\n");
-                    try out_writer.writeAll("    };\n");
+                    try out_writer.writeAll(
+                        \\        }            
+                        \\    };
+                        \\
+                    );
 
                     const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                     const empty_request_body_str = "        pub const RequestBody = struct {};\n";
@@ -535,9 +564,12 @@ pub fn main() !void {
                             },
                         }
                     }
-                    try out_writer.writeAll("        };\n\n");
-
-                    try out_writer.writeAll("    };\n\n");
+                    try out_writer.writeAll(
+                        \\        };
+                        \\    };
+                        \\
+                        \\
+                    );
                 }
             }
         }
