@@ -374,25 +374,15 @@ pub fn main() !void {
                         \\
                     );
                     if (method_params.len != 0) {
-                        const ParamEntry = struct { name: []const u8, json_obj: *const JsonObj };
-                        var list = try std.ArrayList(ParamEntry).initCapacity(loop_arena, method_params.len);
-                        defer for (list.items) |entry| {
-                            loop_arena.free(entry.name);
-                        } else list.deinit();
-
                         for (method_params, 0..) |param, i| {
+                            if (!std.mem.eql(u8, param.in, "query")) {
+                                return error.NonQueryMethodParam;
+                            }
                             if (param.description) |desc| {
                                 if (i == 0) try out_writer.writeAll("\n");
                                 try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
                             }
                             try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
-
-                            // freed by `renderApiType` or in the arraylist deinit on error
-                            var new_decl_name = try std.mem.concat(loop_arena, u8, &.{
-                                &.{std.ascii.toUpper(param.name[0])},
-                                param.name[1..],
-                            });
-                            defer loop_arena.free(new_decl_name);
 
                             switch (try getTypeFieldValue(param.schema)) {
                                 .object => {},
@@ -412,30 +402,10 @@ pub fn main() !void {
                                 },
                             }
 
-                            try out_writer.print("{s}", .{std.zig.fmtId(new_decl_name)});
-                            try out_writer.writeAll(" = null,\n");
-                            list.appendAssumeCapacity(.{
-                                .name = new_decl_name,
-                                .json_obj = param.schema,
-                            });
-                            new_decl_name = &.{}; // set to empty to avoid UAF
+                            std.log.err("Unexpected query schema: '{}'.", .{util.fmtJson(.{ .object = param.schema.* }, .{})});
+                            return error.UnexpectedQuerySchema;
                         }
                         try out_writer.writeAll("\n");
-                        std.mem.reverse(ParamEntry, list.items); // reverse so the first one popped is the same as the first field
-                        while (list.popOrNull()) |entry| {
-                            render_stack.clearRetainingCapacity();
-                            try render_stack.append(RenderStackCmd{ .type_decl = .{
-                                .name = entry.name,
-                                .json_obj = entry.json_obj,
-                            } });
-                            try renderApiType(out_writer, RenderApiTypeParams{
-                                .allocator = loop_arena,
-                                .render_stack = &render_stack,
-                                .current_dir_path = "./reference",
-                                .required_refs = &required_model_refs,
-                                .json_comment_buf = null,
-                            });
-                        }
                     }
                     try out_writer.writeAll(
                         \\        pub fn format(
@@ -483,7 +453,7 @@ pub fn main() !void {
                         });
                     }
                     try out_writer.writeAll(
-                        \\        }            
+                        \\        }
                         \\    };
                         \\
                     );
