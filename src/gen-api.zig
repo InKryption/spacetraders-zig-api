@@ -130,7 +130,12 @@ pub fn main() !void {
                 else => return error.NonObjectPathField,
             };
             const top_params: []const TopLevelParam = blk: {
-                const top_parameters: []const std.json.Value = if (try getObjField(path_info, "parameters", .array, null)) |array| array.items else &.{};
+                const top_parameters: []const std.json.Value = params: {
+                    const val = try getObjField(path_info, "parameters", .array, null);
+                    const array = val orelse break :params &.{};
+                    break :params array.items;
+                };
+
                 const top_params: []TopLevelParam = try loop_arena.alloc(TopLevelParam, top_parameters.len);
                 errdefer loop_arena.free(top_params);
 
@@ -141,9 +146,7 @@ pub fn main() !void {
                     };
 
                     const expected_count = @typeInfo(TopLevelParam).Struct.fields.len - @intFromBool(!parameter.contains("description"));
-                    if (parameter.count() != expected_count) {
-                        return error.UnhandledFields;
-                    }
+                    if (parameter.count() != expected_count) return error.UnhandledFields;
 
                     param.* = .{
                         .description = try getObjField(parameter, "description", .string, null),
@@ -192,298 +195,145 @@ pub fn main() !void {
             };
             defer loop_arena.free(path_items);
 
-            inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| {
-                cont: { // <- just a hack to get around not being able to do runtime 'continue'
-                    const lowercase: []const u8 = comptime blk: {
-                        var lowercase = method_field.name[0..].*;
-                        break :blk std.ascii.lowerString(&lowercase, &lowercase);
+            inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| cont: { // <- just a hack to get around not being able to do runtime 'continue'
+                const lowercase: []const u8 = comptime blk: {
+                    var lowercase = method_field.name[0..].*;
+                    break :blk std.ascii.lowerString(&lowercase, &lowercase);
+                };
+                const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
+                const operation_id: []const u8 = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
+
+                // TODO: deduplicate this from `TopLevelParam` somehow? Or at least
+                // make a function that deduplicates the below procedure
+                const MethodParam = struct {
+                    description: ?[]const u8,
+                    in: []const u8,
+                    name: []const u8,
+                    schema: *const JsonObj,
+                };
+
+                // TODO: generate code representing method parameters (long over-due)
+                const method_params: []const MethodParam = blk: {
+                    const method_parameters: []const std.json.Value = params: {
+                        const val = try getObjField(path_method_info, "parameters", .array, null);
+                        const array = val orelse break :params &.{};
+                        break :params array.items;
                     };
-                    const path_method_info: *const JsonObj = try getObjField(path_info, lowercase, .object, null) orelse break :cont;
-                    const operation_id: []const u8 = try (try getObjField(path_method_info, "operationId", .string, null) orelse error.PathMethodMissingOperationId);
 
-                    // TODO: deduplicate this from `TopLevelParam` somehow? Or at least
-                    // make a function that deduplicates the below procedure
-                    const MethodParam = struct {
-                        description: ?[]const u8,
-                        in: []const u8,
-                        name: []const u8,
-                        schema: *const JsonObj,
-                    };
+                    const method_params: []MethodParam = try loop_arena.alloc(MethodParam, method_parameters.len);
+                    errdefer loop_arena.free(method_params);
 
-                    // TODO: generate code representing method parameters (long over-due)
-                    const method_params: []const MethodParam = blk: {
-                        const method_parameters: []const std.json.Value = if (try getObjField(path_method_info, "parameters", .array, null)) |array| array.items else &.{};
-                        const method_params: []MethodParam = try loop_arena.alloc(MethodParam, method_parameters.len);
-                        errdefer loop_arena.free(method_params);
+                    for (method_params, method_parameters) |*param, *parameter_val| {
+                        const parameter: *const JsonObj = switch (parameter_val.*) {
+                            .object => |*object| object,
+                            else => return error.NonObjectTopParam,
+                        };
 
-                        for (method_params, method_parameters) |*param, *parameter_val| {
-                            const parameter: *const JsonObj = switch (parameter_val.*) {
-                                .object => |*object| object,
-                                else => return error.NonObjectTopParam,
-                            };
+                        const expected_count = @typeInfo(MethodParam).Struct.fields.len - @intFromBool(!parameter.contains("description"));
+                        if (parameter.count() != expected_count) return error.UnhandledFields;
 
-                            const expected_count = @typeInfo(MethodParam).Struct.fields.len - @intFromBool(!parameter.contains("description"));
-                            if (parameter.count() != expected_count) {
-                                return error.UnhandledFields;
-                            }
+                        param.* = .{
+                            .description = try getObjField(parameter, "description", .string, null),
+                            .in = (try getObjField(parameter, "in", .string, null)) orelse return error.MissingInParamField,
+                            .name = (try getObjField(parameter, "name", .string, null)) orelse return error.MissingNameParamField,
+                            .schema = (try getObjField(parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
+                        };
+                    }
+                    break :blk method_params;
+                };
+                defer loop_arena.free(method_params);
 
-                            param.* = .{
-                                .description = try getObjField(parameter, "description", .string, null),
-                                .in = (try getObjField(parameter, "in", .string, null)) orelse return error.MissingInParamField,
-                                .name = (try getObjField(parameter, "name", .string, null)) orelse return error.MissingNameParamField,
-                                .schema = (try getObjField(parameter, "schema", .object, null)) orelse return error.MissingSchemaParamField,
-                            };
+                const op_name: []const u8 = blk: {
+                    const op_name = try loop_arena.dupe(u8, operation_id);
+                    errdefer loop_arena.free(op_name);
+                    std.mem.replaceScalar(u8, op_name, '-', '_');
+                    break :blk op_name;
+                };
+                defer loop_arena.free(op_name);
+
+                if (json_as_comment) {
+                    try out_writer.writeAll("// ```\n");
+                    try writeJsonAsComment(out_writer, .{ .object = path_method_info.* }, "// ", &json_comment_buf);
+                    try out_writer.writeAll("// ```\n");
+                }
+
+                if (try getObjField(path_method_info, "summary", .string, null)) |summary| {
+                    try util.writeLinesSurrounded(out_writer, "/// ", summary, "\n");
+                }
+                if (try getObjField(path_method_info, "description", .string, null)) |desc| {
+                    if (path_method_info.contains("summary"))
+                        try out_writer.writeAll("///\n");
+                    try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                }
+                try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
+                try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
+                try out_writer.print(
+                    \\    /// '{s}'
+                    \\    pub const PathFmt = struct {{
+                    \\
+                , .{path});
+
+                if (top_params.len != 0) {
+                    const ListEntry = struct { name: []const u8, schema: *const JsonObj };
+                    var list = try std.ArrayList(ListEntry).initCapacity(allocator, top_params.len);
+                    defer for (list.items) |entry| {
+                        allocator.free(entry.name);
+                    } else list.deinit();
+
+                    for (top_params) |param| {
+                        if (!std.mem.eql(u8, param.in, "path")) {
+                            std.log.err("Unhandled top level parameter which isn't in the path '{s}'.", .{param.name});
+                            continue;
                         }
-
-                        break :blk method_params;
-                    };
-                    defer loop_arena.free(method_params);
-
-                    const op_name: []const u8 = blk: {
-                        const op_name = try loop_arena.dupe(u8, operation_id);
-                        errdefer loop_arena.free(op_name);
-                        std.mem.replaceScalar(u8, op_name, '-', '_');
-                        break :blk op_name;
-                    };
-                    defer loop_arena.free(op_name);
-
-                    if (json_as_comment) {
-                        try out_writer.writeAll("// ```\n");
-                        try writeJsonAsComment(out_writer, .{ .object = path_method_info.* }, "// ", &json_comment_buf);
-                        try out_writer.writeAll("// ```\n");
-                    }
-
-                    if (try getObjField(path_method_info, "summary", .string, null)) |summary| {
-                        try util.writeLinesSurrounded(out_writer, "/// ", summary, "\n");
-                    }
-                    if (try getObjField(path_method_info, "description", .string, null)) |desc| {
-                        if (path_method_info.contains("summary"))
-                            try out_writer.writeAll("///\n");
-                        try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
-                    }
-                    try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
-                    try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
-                    try out_writer.print(
-                        \\    /// '{s}'
-                        \\    pub const PathFmt = struct {{
-                        \\
-                    , .{path});
-
-                    if (top_params.len != 0) {
-                        const ListEntry = struct { name: []const u8, schema: *const JsonObj };
-                        var list = try std.ArrayList(ListEntry).initCapacity(allocator, top_params.len);
-                        defer for (list.items) |entry| {
-                            allocator.free(entry.name);
-                        } else list.deinit();
-
-                        for (top_params) |param| {
-                            if (!std.mem.eql(u8, param.in, "path")) {
-                                std.log.err("Unhandled top level parameter which isn't in the path '{s}'.", .{param.name});
-                                continue;
-                            }
-                            if (param.description) |desc| {
-                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
-                            }
-                            try out_writer.print(
-                                \\        {s}: 
-                            , .{std.zig.fmtId(param.name)});
-                            if (!param.required) try out_writer.writeAll("?");
-
-                            var decl_name = try std.mem.concat(allocator, u8, &.{
-                                &.{std.ascii.toUpper(param.name[0])},
-                                param.name[1..],
-                            });
-                            defer allocator.free(decl_name);
-
-                            switch (try getTypeFieldValue(param.schema)) {
-                                .object => {},
-                                .array => {},
-                                .string => if (!param.schema.contains("enum")) {
-                                    try out_writer.writeAll("[]const u8,\n");
-                                    continue;
-                                },
-                                inline //
-                                .number,
-                                .integer,
-                                .boolean,
-                                => |itag| {
-                                    try writeSimpleType(out_writer, itag, param.schema);
-                                    try out_writer.writeAll(",\n");
-                                    continue;
-                                },
-                            }
-                            try out_writer.print("{s},\n", .{std.zig.fmtId(decl_name)});
-                            list.appendAssumeCapacity(.{
-                                .name = decl_name,
-                                .schema = param.schema,
-                            });
-                            decl_name = &.{}; // make freeing a noop out to avoid UAF
-                        }
-                        try out_writer.writeAll("\n");
-
-                        std.mem.reverse(ListEntry, list.items); // pop in reverse order to retain the original order
-                        while (list.popOrNull()) |entry| {
-                            render_stack.clearRetainingCapacity();
-                            try render_stack.append(.{ .type_decl = .{
-                                .name = entry.name,
-                                .json_obj = entry.schema,
-                            } });
-                            try renderApiType(
-                                out_writer,
-                                RenderApiTypeParams{
-                                    .allocator = allocator,
-                                    .render_stack = &render_stack,
-                                    .current_dir_path = "./reference",
-                                    .required_refs = &required_model_refs,
-                                    .json_comment_buf = null,
-                                },
-                            );
-                        }
-                    }
-                    try out_writer.writeAll(
-                        \\        pub fn format(
-                        \\            self: @This(),
-                        \\            comptime fmt_str: []const u8,
-                        \\            options: @import("std").fmt.FormatOptions,
-                        \\            writer: anytype,
-                        \\        ) !void {
-                        \\
-                    );
-                    if (top_params.len == 0) try out_writer.writeAll(
-                        \\            _ = self;
-                        \\
-                    );
-                    try out_writer.writeAll(
-                        \\            _ = fmt_str;
-                        \\            _ = options;
-                        \\
-                    );
-                    if (path_items.len == 0) try out_writer.writeAll(
-                        \\            try writer.writeAll("/");
-                        \\
-                    );
-                    for (path_items) |item| {
-                        assert(item[0] != '{' or item[item.len - 1] == '}');
-                        if (item[0] == '{') try out_writer.print(
-                            \\            try writer.print("/{{s}}", .{{self.{s}}});
-                            \\
-                        , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
-                            \\            try writer.writeAll("/{}");
-                            \\
-                        , .{std.zig.fmtEscapes(item)});
-                    }
-                    try out_writer.writeAll(
-                        \\        }
-                        \\    };
-                        \\    pub const QueryFmt = struct {
-                        \\
-                    );
-                    if (method_params.len != 0) {
-                        for (method_params, 0..) |param, i| {
-                            if (!std.mem.eql(u8, param.in, "query")) {
-                                return error.NonQueryMethodParam;
-                            }
-                            if (param.description) |desc| {
-                                if (i == 0) try out_writer.writeAll("\n");
-                                try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
-                            }
-                            try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
-
-                            switch (try getTypeFieldValue(param.schema)) {
-                                .object => {},
-                                .array => {},
-                                .string => if (!param.schema.contains("enum")) {
-                                    try out_writer.writeAll("[]const u8 = null,\n");
-                                    continue;
-                                },
-                                inline //
-                                .number,
-                                .integer,
-                                .boolean,
-                                => |itag| {
-                                    try writeSimpleType(out_writer, itag, param.schema);
-                                    try out_writer.writeAll(" = null,\n");
-                                    continue;
-                                },
-                            }
-
-                            std.log.err("Unexpected query schema: '{}'.", .{util.fmtJson(.{ .object = param.schema.* }, .{})});
-                            return error.UnexpectedQuerySchema;
-                        }
-                        try out_writer.writeAll("\n");
-                    }
-                    try out_writer.writeAll(
-                        \\        pub fn format(
-                        \\            self: @This(),
-                        \\            comptime fmt_str: []const u8,
-                        \\            options: @import("std").fmt.FormatOptions,
-                        \\            writer: anytype,
-                        \\        ) !void {
-                        \\
-                    );
-                    if (method_params.len == 0) try out_writer.writeAll(
-                        \\            _ = self;
-                        \\            _ = fmt_str;
-                        \\            _ = options;
-                        \\            _ = writer;
-                        \\
-                    ) else try out_writer.writeAll(
-                        \\            _ = fmt_str;
-                        \\            _ = options;
-                        \\            var need_sep = false;
-                        \\
-                    );
-                    for (method_params, 0..) |param, i| {
-                        if (i == 0) try out_writer.print(
-                            \\            if (self.{s}) |val| {{
-                            \\                need_sep = true;
-                            \\                try writer.print("?{}={{any}}", .{{val}});
-                            \\            }}
-                        , .{
-                            std.zig.fmtId(param.name),
-                            std.zig.fmtEscapes(param.name),
-                        }) else try out_writer.print(
-                            \\            if (self.{0s}) |val| {{
-                            \\                if (need_sep) {{
-                            \\                    try writer.print("&{}={{any}}", .{{val}});
-                            \\                }} else {{
-                            \\                    need_sep = true;
-                            \\                    try writer.print("?{}={{any}}", .{{val}});
-                            \\                }}
-                            \\            }}
-                            \\
-                        , .{
-                            std.zig.fmtId(param.name),
-                            std.zig.fmtEscapes(param.name),
-                        });
-                    }
-                    try out_writer.writeAll(
-                        \\        }
-                        \\    };
-                        \\
-                    );
-
-                    const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
-                    const empty_request_body_str = "        pub const RequestBody = struct {};\n";
-                    if (maybe_request_body) |request_body| blk: {
-                        if (try getObjField(request_body, "description", .string, null)) |desc| {
+                        if (param.description) |desc| {
                             try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
                         }
+                        try out_writer.print(
+                            \\        {s}: 
+                        , .{std.zig.fmtId(param.name)});
+                        if (!param.required) try out_writer.writeAll("?");
 
-                        const schema = try getContentApplicationJsonSchema(request_body);
-                        if (schema.count() == 0) {
-                            std.log.warn("Encountered empty RequestBody schema inside path '{s}'. Outputting as empty struct.", .{path});
-                            try out_writer.writeAll(empty_request_body_str);
-                            break :blk;
-                        }
+                        var decl_name = try std.mem.concat(allocator, u8, &.{
+                            &.{std.ascii.toUpper(param.name[0])},
+                            param.name[1..],
+                        });
+                        defer allocator.free(decl_name);
 
-                        render_stack.clearRetainingCapacity();
-                        try renderApiTypeWith(
-                            out_writer,
-                            RenderStackCmd.TypeDecl{
-                                .name = "RequestBody",
-                                .json_obj = schema,
+                        switch (try getTypeFieldValue(param.schema)) {
+                            .object => {},
+                            .array => {},
+                            .string => if (!param.schema.contains("enum")) {
+                                try out_writer.writeAll("[]const u8,\n");
+                                continue;
                             },
+                            inline //
+                            .number,
+                            .integer,
+                            .boolean,
+                            => |itag| {
+                                try writeSimpleType(out_writer, itag, param.schema);
+                                try out_writer.writeAll(",\n");
+                                continue;
+                            },
+                        }
+                        try out_writer.print("{s},\n", .{std.zig.fmtId(decl_name)});
+                        list.appendAssumeCapacity(.{
+                            .name = decl_name,
+                            .schema = param.schema,
+                        });
+                        decl_name = &.{}; // make freeing a noop out to avoid UAF
+                    }
+                    try out_writer.writeAll("\n");
+
+                    std.mem.reverse(ListEntry, list.items); // pop in reverse order to retain the original order
+                    while (list.popOrNull()) |entry| {
+                        render_stack.clearRetainingCapacity();
+                        try render_stack.append(.{ .type_decl = .{
+                            .name = entry.name,
+                            .json_obj = entry.schema,
+                        } });
+                        try renderApiType(
+                            out_writer,
                             RenderApiTypeParams{
                                 .allocator = allocator,
                                 .render_stack = &render_stack,
@@ -492,60 +342,213 @@ pub fn main() !void {
                                 .json_comment_buf = null,
                             },
                         );
-                    } else {
-                        try out_writer.writeAll(empty_request_body_str);
                     }
+                }
+                try out_writer.writeAll(
+                    \\        pub fn format(
+                    \\            self: @This(),
+                    \\            comptime fmt_str: []const u8,
+                    \\            options: @import("std").fmt.FormatOptions,
+                    \\            writer: anytype,
+                    \\        ) !void {
+                    \\
+                );
+                if (top_params.len == 0) try out_writer.writeAll(
+                    \\            _ = self;
+                    \\
+                );
+                try out_writer.writeAll(
+                    \\            _ = fmt_str;
+                    \\            _ = options;
+                    \\
+                );
+                if (path_items.len == 0) try out_writer.writeAll(
+                    \\            try writer.writeAll("/");
+                    \\
+                );
+                for (path_items) |item| {
+                    assert(item[0] != '{' or item[item.len - 1] == '}');
+                    if (item[0] == '{') try out_writer.print(
+                        \\            try writer.print("/{{s}}", .{{self.{s}}});
+                        \\
+                    , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
+                        \\            try writer.writeAll("/{}");
+                        \\
+                    , .{std.zig.fmtEscapes(item)});
+                }
+                try out_writer.writeAll(
+                    \\        }
+                    \\    };
+                    \\    pub const QueryFmt = struct {
+                    \\
+                );
+                if (method_params.len != 0) {
+                    for (method_params, 0..) |param, i| {
+                        if (!std.mem.eql(u8, param.in, "query")) {
+                            return error.NonQueryMethodParam;
+                        }
+                        if (param.description) |desc| {
+                            if (i == 0) try out_writer.writeAll("\n");
+                            try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                        }
+                        try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
 
-                    try out_writer.writeAll("        pub const responses = struct {\n");
-                    const responses: *const JsonObj = try (try getObjField(path_method_info, "responses", .object, null) orelse error.NoResponses);
-
-                    for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
-                        const response_info: *const JsonObj = switch (response_info_val.*) {
-                            .object => |*object| object,
-                            else => return error.NonObjectResponseField,
-                        };
-
-                        const response_code_int = std.fmt.parseInt(u32, response_code_str, 10) catch |err| {
-                            std.log.err("{s}, couldn't parse '{s}' response code value", .{ @errorName(err), response_code_str });
-                            return err;
-                        };
-                        const HttpStatus = std.http.Status;
-                        const response_code = try std.meta.intToEnum(HttpStatus, response_code_int);
-
-                        switch (response_code) {
-                            .ok,
-                            .created,
-                            => |tag| {
-                                render_stack.clearRetainingCapacity();
-                                try renderApiTypeWith(
-                                    out_writer,
-                                    RenderStackCmd.TypeDecl{
-                                        .name = @tagName(tag),
-                                        .json_obj = try getContentApplicationJsonSchema(response_info),
-                                    },
-                                    RenderApiTypeParams{
-                                        .allocator = allocator,
-                                        .render_stack = &render_stack,
-                                        .current_dir_path = "./reference",
-                                        .required_refs = &required_model_refs,
-                                        .json_comment_buf = null,
-                                    },
-                                );
+                        switch (try getTypeFieldValue(param.schema)) {
+                            .object => {},
+                            .array => {},
+                            .string => if (!param.schema.contains("enum")) {
+                                try out_writer.writeAll("[]const u8 = null,\n");
+                                continue;
                             },
-                            .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
-                            else => |tag| {
-                                std.log.err("Unhandled HTTP status '{s}' ({d})", .{ @tagName(tag), @intFromEnum(tag) });
-                                return error.UnhandledHttpStatus;
+                            inline //
+                            .number,
+                            .integer,
+                            .boolean,
+                            => |itag| {
+                                try writeSimpleType(out_writer, itag, param.schema);
+                                try out_writer.writeAll(" = null,\n");
+                                continue;
                             },
                         }
+
+                        std.log.err("Unexpected query schema: '{}'.", .{util.fmtJson(.{ .object = param.schema.* }, .{})});
+                        return error.UnexpectedQuerySchema;
                     }
-                    try out_writer.writeAll(
-                        \\        };
-                        \\    };
-                        \\
-                        \\
-                    );
+                    try out_writer.writeAll("\n");
                 }
+                try out_writer.writeAll(
+                    \\        pub fn format(
+                    \\            self: @This(),
+                    \\            comptime fmt_str: []const u8,
+                    \\            options: @import("std").fmt.FormatOptions,
+                    \\            writer: anytype,
+                    \\        ) !void {
+                    \\
+                );
+                if (method_params.len == 0) try out_writer.writeAll(
+                    \\            _ = self;
+                    \\            _ = fmt_str;
+                    \\            _ = options;
+                    \\            _ = writer;
+                    \\
+                ) else try out_writer.writeAll(
+                    \\            _ = fmt_str;
+                    \\            _ = options;
+                    \\            var need_sep = false;
+                    \\
+                );
+                for (method_params, 0..) |param, i| {
+                    if (i == 0) try out_writer.print(
+                        \\            if (self.{s}) |val| {{
+                        \\                need_sep = true;
+                        \\                try writer.print("?{}={{any}}", .{{val}});
+                        \\            }}
+                    , .{
+                        std.zig.fmtId(param.name),
+                        std.zig.fmtEscapes(param.name),
+                    }) else try out_writer.print(
+                        \\            if (self.{0s}) |val| {{
+                        \\                if (need_sep) {{
+                        \\                    try writer.print("&{}={{any}}", .{{val}});
+                        \\                }} else {{
+                        \\                    need_sep = true;
+                        \\                    try writer.print("?{}={{any}}", .{{val}});
+                        \\                }}
+                        \\            }}
+                        \\
+                    , .{
+                        std.zig.fmtId(param.name),
+                        std.zig.fmtEscapes(param.name),
+                    });
+                }
+                try out_writer.writeAll(
+                    \\        }
+                    \\    };
+                    \\
+                );
+
+                const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
+                const empty_request_body_str = "        pub const RequestBody = struct {};\n";
+                if (maybe_request_body) |request_body| blk: {
+                    if (try getObjField(request_body, "description", .string, null)) |desc| {
+                        try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
+                    }
+
+                    const schema = try getContentApplicationJsonSchema(request_body);
+                    if (schema.count() == 0) {
+                        std.log.warn("Encountered empty RequestBody schema inside path '{s}'. Outputting as empty struct.", .{path});
+                        try out_writer.writeAll(empty_request_body_str);
+                        break :blk;
+                    }
+
+                    render_stack.clearRetainingCapacity();
+                    try renderApiTypeWith(
+                        out_writer,
+                        RenderStackCmd.TypeDecl{
+                            .name = "RequestBody",
+                            .json_obj = schema,
+                        },
+                        RenderApiTypeParams{
+                            .allocator = allocator,
+                            .render_stack = &render_stack,
+                            .current_dir_path = "./reference",
+                            .required_refs = &required_model_refs,
+                            .json_comment_buf = null,
+                        },
+                    );
+                } else {
+                    try out_writer.writeAll(empty_request_body_str);
+                }
+
+                try out_writer.writeAll("        pub const responses = struct {\n");
+                const responses: *const JsonObj = try (try getObjField(path_method_info, "responses", .object, null) orelse error.NoResponses);
+
+                for (responses.keys(), responses.values()) |response_code_str, *response_info_val| {
+                    const response_info: *const JsonObj = switch (response_info_val.*) {
+                        .object => |*object| object,
+                        else => return error.NonObjectResponseField,
+                    };
+
+                    const response_code_int = std.fmt.parseInt(u32, response_code_str, 10) catch |err| {
+                        std.log.err("{s}, couldn't parse '{s}' response code value", .{ @errorName(err), response_code_str });
+                        return err;
+                    };
+                    const HttpStatus = std.http.Status;
+                    const response_code = try std.meta.intToEnum(HttpStatus, response_code_int);
+
+                    switch (response_code) {
+                        .ok,
+                        .created,
+                        => |tag| {
+                            render_stack.clearRetainingCapacity();
+                            try renderApiTypeWith(
+                                out_writer,
+                                RenderStackCmd.TypeDecl{
+                                    .name = @tagName(tag),
+                                    .json_obj = try getContentApplicationJsonSchema(response_info),
+                                },
+                                RenderApiTypeParams{
+                                    .allocator = allocator,
+                                    .render_stack = &render_stack,
+                                    .current_dir_path = "./reference",
+                                    .required_refs = &required_model_refs,
+                                    .json_comment_buf = null,
+                                },
+                            );
+                        },
+                        .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
+                        else => |tag| {
+                            std.log.err("Unhandled HTTP status '{s}' ({d})", .{ @tagName(tag), @intFromEnum(tag) });
+                            return error.UnhandledHttpStatus;
+                        },
+                    }
+                }
+                try out_writer.writeAll(
+                    \\        };
+                    \\    };
+                    \\
+                    \\
+                );
             }
         }
 
