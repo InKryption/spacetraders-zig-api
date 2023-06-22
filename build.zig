@@ -93,8 +93,13 @@ fn localTesting(
         "clone",
         "https://github.com/SpaceTradersAPI/api-docs.git",
     });
-    const apidocs_dir = git_clone_api_docs.addOutputFileArg("");
+    git_clone_api_docs.addCheck(Build.Step.Run.StdIo.Check{
+        .expect_stderr_match = b.fmt("Cloning into '{s}", .{
+            b.cache_root.join(b.allocator, &.{"o"}) catch |err| @panic(@errorName(err)),
+        }),
+    });
 
+    const apidocs_dir = git_clone_api_docs.addOutputFileArg("");
     const generate_api_run = b.addRunArtifact(generate_api);
     const api_src_file = runGenerator(generate_api_run, .{
         .number_format = number_format,

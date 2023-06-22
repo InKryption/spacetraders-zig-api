@@ -101,10 +101,10 @@ pub fn parse(
             .json_as_comment => |tag| {
                 const field_ptr = &@field(result, @tagName(tag));
                 const BoolTag = enum(u1) {
-                    false = @boolToInt(false),
-                    true = @boolToInt(true),
+                    false = @intFromBool(false),
+                    true = @intFromBool(true),
                 };
-                field_ptr.* = if (std.meta.stringToEnum(BoolTag, next_tok)) |bool_tag| @bitCast(bool, @enumToInt(bool_tag)) else {
+                field_ptr.* = if (std.meta.stringToEnum(BoolTag, next_tok)) |bool_tag| @bitCast(bool, @intFromEnum(bool_tag)) else {
                     log_err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ id_kebab_name, next_tok });
                     return error.InvalidParameterFlagValue;
                 };

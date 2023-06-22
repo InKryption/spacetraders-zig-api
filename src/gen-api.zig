@@ -17,7 +17,7 @@ pub const std_options = struct {
         comptime fmt_str: []const u8,
         args: anytype,
     ) void {
-        if (@enumToInt(msg_level) <= @enumToInt(runtime_log_level)) {
+        if (@intFromEnum(msg_level) <= @intFromEnum(runtime_log_level)) {
             std.log.defaultLog(msg_level, scope, fmt_str, args);
         }
     }
@@ -79,13 +79,16 @@ pub fn main() !void {
 
     try out_writer.print(
         \\/// Represents a floating point number.
-        \\pub const Number = {s};
+        \\pub const {s} = {s};
         \\
         \\
-    , .{switch (number_format) {
-        .number_string => "[]const u8",
-        .f128, .f64 => |tag| @tagName(tag),
-    }});
+    , .{
+        number_format_subst_decl_name,
+        switch (number_format) {
+            .number_string => "[]const u8",
+            .f128, .f64 => |tag| @tagName(tag),
+        },
+    });
 
     var required_model_refs = std.BufSet.init(allocator);
     defer required_model_refs.deinit();
@@ -137,7 +140,8 @@ pub fn main() !void {
                         else => return error.NonObjectTopParam,
                     };
 
-                    if (parameter.count() != @typeInfo(TopLevelParam).Struct.fields.len - @boolToInt(!parameter.contains("description"))) {
+                    const expected_count = @typeInfo(TopLevelParam).Struct.fields.len - @intFromBool(!parameter.contains("description"));
+                    if (parameter.count() != expected_count) {
                         return error.UnhandledFields;
                     }
 
@@ -218,7 +222,8 @@ pub fn main() !void {
                                 else => return error.NonObjectTopParam,
                             };
 
-                            if (parameter.count() != @typeInfo(MethodParam).Struct.fields.len - @boolToInt(!parameter.contains("description"))) {
+                            const expected_count = @typeInfo(MethodParam).Struct.fields.len - @intFromBool(!parameter.contains("description"));
+                            if (parameter.count() != expected_count) {
                                 return error.UnhandledFields;
                             }
 
@@ -529,7 +534,7 @@ pub fn main() !void {
                             },
                             .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
                             else => |tag| {
-                                std.log.err("Unhandled HTTP status '{s}' ({d})", .{ @tagName(tag), @enumToInt(tag) });
+                                std.log.err("Unhandled HTTP status '{s}' ({d})", .{ @tagName(tag), @intFromEnum(tag) });
                                 return error.UnhandledHttpStatus;
                             },
                         }
@@ -1092,8 +1097,8 @@ fn getRefFieldValue(json_obj: *const JsonObj) GetRefFieldValueError!?[]const u8 
     // not sure if there's a better way to handle this,
     // but hopefully this is enough.
     const expected_count = @as(usize, 1) +
-        @boolToInt(json_obj.contains("example")) +
-        @boolToInt(json_obj.contains("description"));
+        @intFromBool(json_obj.contains("example")) +
+        @intFromBool(json_obj.contains("description"));
     if (json_obj.count() != expected_count) {
         std.debug.print("{}", .{util.fmtJson(.{ .object = json_obj.* }, .{})});
         return error.NotAlone;
@@ -1114,9 +1119,6 @@ const GetTypeFieldValueError = error{
 /// an 'enum' field.
 fn getTypeFieldValue(json_obj: *const JsonObj) GetTypeFieldValueError!DataType {
     const untyped_value = json_obj.get("type") orelse {
-        if (json_obj.contains("enum")) {
-            return .string;
-        }
         return error.NotPresent;
     };
     const string_value = switch (untyped_value) {

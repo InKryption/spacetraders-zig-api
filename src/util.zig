@@ -87,10 +87,10 @@ pub fn ReplaceEnumTagScalar(
             } });
         };
         pub inline fn make(value: Original) WithReplacement {
-            return @intToEnum(WithReplacement, @enumToInt(value));
+            return @enumFromInt(WithReplacement, @intFromEnum(value));
         }
         pub inline fn unmake(value: WithReplacement) Original {
-            return @intToEnum(Original, @enumToInt(value));
+            return @enumFromInt(Original, @intFromEnum(value));
         }
     };
 }
