@@ -15,20 +15,9 @@ test {
         get_system_waypoints.PathFmt{ .systemSymbol = "system-symbol2" },
         get_system_waypoints.QueryFmt{ .limit = 20 },
     });
-    try std.testing.expectFmt(
-        \\GET /systems/system-symbol3/waypoints?limit=20 HTTP/1.1
-        \\Content-Length: 0
-        \\
-    ,
-        \\{s} {}{} {s}
-        \\Content-Length: 0
-        \\
-    ,
-        .{
-            @tagName(get_system_waypoints.method),
-            get_system_waypoints.PathFmt{ .systemSymbol = "system-symbol3" },
-            get_system_waypoints.QueryFmt{ .limit = 20 },
-            @tagName(std.http.Version.@"HTTP/1.1"),
-        },
-    );
+    try std.testing.expectFmt("GET /systems/system-symbol3/waypoints?limit=20 HTTP/1.1", "{}", .{get_system_waypoints.RequestHead{
+        .path = .{ .systemSymbol = "system-symbol3" },
+        .query = .{ .limit = 20 },
+        .version = .@"HTTP/1.1",
+    }});
 }

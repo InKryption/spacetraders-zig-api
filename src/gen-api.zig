@@ -160,20 +160,46 @@ pub fn main() !void {
             };
             defer loop_arena.free(top_params);
 
-            const path_items: []const []const u8 = blk: {
-                var path_items = std.ArrayList([]const u8).init(loop_arena);
-                defer path_items.deinit();
+            const path_segments: []const []const u8 = blk: {
+                var path_segments = std.ArrayList([]const u8).init(loop_arena);
+                defer {
+                    for (path_segments.items) |segment|
+                        loop_arena.free(segment);
+                    path_segments.deinit();
+                }
 
                 var path_iter = std.mem.tokenizeScalar(u8, path, '/');
                 while (path_iter.next()) |component| {
                     // should we actually handle cases like 'foo//bar' with `std.mem.splitScalar`?
                     assert(component.len >= 1);
-                    try path_items.append(component);
 
-                    if (component[0] != '{') continue;
-                    if (component[component.len - 1] != '}') {
-                        std.log.err("Unclosed brace in path '{s}'", .{path});
-                        return error.UnclosedBraceInPath;
+                    if (component[0] == '{') {
+                        if (component[component.len - 1] != '}') {
+                            std.log.err("Unclosed brace in path '{s}'", .{path});
+                            return error.UnclosedBraceInPath;
+                        }
+
+                        const duped = try loop_arena.dupe(u8, component);
+                        errdefer loop_arena.free(duped);
+
+                        try path_segments.append(duped);
+                    } else {
+                        if (path_segments.items.len == 0 or
+                            path_segments.getLast()[0] == '{')
+                        {
+                            try path_segments.append(try loop_arena.dupe(u8, component));
+                            continue;
+                        }
+                        const last = &path_segments.items[path_segments.items.len - 1];
+                        if (last.*[0] != '{') {
+                            const new = try loop_arena.realloc(@constCast(last.*), last.len + 1 + component.len);
+                            new[last.len] = '/';
+                            @memcpy(new[last.len + 1 ..], component);
+                            last.* = new;
+                        } else {
+                            assert(last.*[last.len - 1] == '}');
+                        }
+                        continue;
                     }
                     const param_name = component[1 .. component.len - 1];
 
@@ -191,9 +217,9 @@ pub fn main() !void {
                     if (data_type != .string) return error.NonStringPathParameter;
                 }
 
-                break :blk try path_items.toOwnedSlice();
+                break :blk try path_segments.toOwnedSlice();
             };
-            defer loop_arena.free(path_items);
+            defer loop_arena.free(path_segments);
 
             inline for (@typeInfo(std.http.Method).Enum.fields) |method_field| cont: { // <- just a hack to get around not being able to do runtime 'continue'
                 const lowercase: []const u8 = comptime blk: {
@@ -300,9 +326,14 @@ pub fn main() !void {
                         defer allocator.free(decl_name);
 
                         switch (try getTypeFieldValue(param.schema)) {
-                            .object => {},
-                            .array => {},
-                            .string => if (!param.schema.contains("enum")) {
+                            .object, .array => |tag| {
+                                std.log.err("Non-primitive '{s}' type in path parameter", .{@tagName(tag)});
+                                return error.NonPrimitivePathParameter;
+                            },
+                            .string => {
+                                if (param.schema.contains("enum")) {
+                                    std.log.warn("TODO: handle enum in path parameter", .{});
+                                }
                                 try out_writer.writeAll("[]const u8,\n");
                                 continue;
                             },
@@ -362,16 +393,18 @@ pub fn main() !void {
                     \\            _ = options;
                     \\
                 );
-                if (path_items.len == 0) try out_writer.writeAll(
+                if (path_segments.len == 0) try out_writer.writeAll(
                     \\            try writer.writeAll("/");
                     \\
                 );
-                for (path_items) |item| {
+                for (path_segments) |item| {
                     assert(item[0] != '{' or item[item.len - 1] == '}');
-                    if (item[0] == '{') try out_writer.print(
-                        \\            try writer.print("/{{s}}", .{{self.{s}}});
-                        \\
-                    , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
+                    if (item[0] == '{') {
+                        try out_writer.print(
+                            \\            try writer.print("/{{s}}", .{{self.{s}}});
+                            \\
+                        , .{std.zig.fmtId(item[1 .. item.len - 1])});
+                    } else try out_writer.print(
                         \\            try writer.writeAll("/{}");
                         \\
                     , .{std.zig.fmtEscapes(item)});
@@ -394,9 +427,14 @@ pub fn main() !void {
                         try out_writer.print("        {s}: ?", .{std.zig.fmtId(param.name)});
 
                         switch (try getTypeFieldValue(param.schema)) {
-                            .object => {},
-                            .array => {},
-                            .string => if (!param.schema.contains("enum")) {
+                            .object, .array => |tag| {
+                                std.log.err("Non-primitive '{s}' type in query parameter", .{@tagName(tag)});
+                                return error.NonPrimitiveQueryParameter;
+                            },
+                            .string => {
+                                if (param.schema.contains("enum")) {
+                                    std.log.warn("TODO: handle enum in query parameter", .{});
+                                }
                                 try out_writer.writeAll("[]const u8 = null,\n");
                                 continue;
                             },
@@ -461,11 +499,32 @@ pub fn main() !void {
                         std.zig.fmtEscapes(param.name),
                     });
                 }
-                try out_writer.writeAll(
-                    \\        }
-                    \\    };
+                try out_writer.print(
+                    \\        }}
+                    \\    }};
                     \\
-                );
+                    \\    pub const RequestHead = struct {{
+                    \\        path: PathFmt,
+                    \\        query: QueryFmt,
+                    \\        version: @import("std").http.Version,
+                    \\
+                    \\        pub fn format(
+                    \\            self: RequestHead,
+                    \\            comptime fmt_str: []const u8,
+                    \\            options: @import("std").fmt.FormatOptions,
+                    \\            writer: anytype,
+                    \\        ) !void {{
+                    \\            _ = fmt_str;
+                    \\            _ = options;
+                    \\            try writer.print("{s} {{}}{{}} {{s}}", .{{
+                    \\                self.path, self.query, @tagName(self.version),
+                    \\            }});
+                    \\        }}
+                    \\
+                    \\    }};
+                    \\
+                    \\
+                , .{method_field.name});
 
                 const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                 const empty_request_body_str = "        pub const RequestBody = struct {};\n";
