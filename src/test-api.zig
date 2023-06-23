@@ -15,9 +15,10 @@ test {
         get_system_waypoints.PathFmt{ .systemSymbol = "system-symbol2" },
         get_system_waypoints.QueryFmt{ .limit = 20 },
     });
-    try std.testing.expectFmt("GET /systems/system-symbol3/waypoints?limit=20 HTTP/1.1", "{}", .{get_system_waypoints.RequestHead{
-        .path = .{ .systemSymbol = "system-symbol3" },
-        .query = .{ .limit = 20 },
-        .version = .@"HTTP/1.1",
-    }});
+    try std.testing.expectFmt("/systems/system-symbol3/waypoints?limit=20", "{}", .{
+        api.RequestUri(.get_system_waypoints){
+            .path = .{ .systemSymbol = "system-symbol3" },
+            .query = .{ .limit = 20 },
+        },
+    });
 }

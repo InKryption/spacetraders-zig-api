@@ -89,6 +89,30 @@ pub fn main() !void {
             .f128, .f64 => |tag| @tagName(tag),
         },
     });
+    try out_writer.writeAll(
+        \\
+        \\pub fn RequestUri(comptime operation: @import("std").meta.DeclEnum(ref)) type {
+        \\    return  struct {
+        \\        path: Operation.PathFmt,
+        \\        query: Operation.QueryFmt,
+        \\
+        \\        const Operation = @field(ref, @tagName(operation));
+        \\        pub fn format(
+        \\            self: @This(),
+        \\            comptime fmt_str: []const u8,
+        \\            options: @import("std").fmt.FormatOptions,
+        \\            writer: anytype,
+        \\        ) !void {
+        \\            _ = options;
+        \\            if (fmt_str.len != 0) @import("std").invalidFmtError(fmt_str, self);
+        \\            try writer.print("{}{}", .{ self.path, self.query });
+        \\        }
+        \\
+        \\    };
+        \\}
+        \\
+        \\
+    );
 
     var required_model_refs = std.BufSet.init(allocator);
     defer required_model_refs.deinit();
@@ -384,13 +408,9 @@ pub fn main() !void {
                     \\        ) !void {
                     \\
                 );
-                if (top_params.len == 0) try out_writer.writeAll(
-                    \\            _ = self;
-                    \\
-                );
                 try out_writer.writeAll(
-                    \\            _ = fmt_str;
                     \\            _ = options;
+                    \\            if (fmt_str.len != 0) @import("std").fmt.invalidFmt(fmt_str, self);
                     \\
                 );
                 if (path_segments.len == 0) try out_writer.writeAll(
@@ -399,14 +419,16 @@ pub fn main() !void {
                 );
                 for (path_segments) |item| {
                     assert(item[0] != '{' or item[item.len - 1] == '}');
-                    if (item[0] == '{') {
-                        try out_writer.print(
-                            \\            try writer.print("/{{s}}", .{{self.{s}}});
-                            \\
-                        , .{std.zig.fmtId(item[1 .. item.len - 1])});
-                    } else try out_writer.print(
-                        \\            try writer.writeAll("/{}");
-                        \\
+                    if (item[0] == '{') try out_writer.print(
+                    // zig fmt: off
+                    \\            try writer.print("/{{s}}", .{{self.{s}}});
+                    \\
+                    // zig fmt: on
+                    , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
+                    // zig fmt: off
+                    \\            try writer.writeAll("/{}");
+                    \\
+                    // zig fmt: on
                     , .{std.zig.fmtEscapes(item)});
                 }
                 try out_writer.writeAll(
@@ -461,70 +483,61 @@ pub fn main() !void {
                     \\            options: @import("std").fmt.FormatOptions,
                     \\            writer: anytype,
                     \\        ) !void {
+                    \\            _ = options;
                     \\
                 );
-                if (method_params.len == 0) try out_writer.writeAll(
-                    \\            _ = self;
-                    \\            _ = fmt_str;
-                    \\            _ = options;
+                try out_writer.writeAll(if (method_params.len == 0)
                     \\            _ = writer;
-                    \\
-                ) else try out_writer.writeAll(
-                    \\            _ = fmt_str;
-                    \\            _ = options;
+                    \\            if (fmt_str.len != 0) @import("std").fmt.invalidFmt(fmt_str, self);
+                else
+                    \\            if (fmt_str.len != 0) @import("std").fmt.invalidFmt(fmt_str, self);
                     \\            var need_sep = false;
-                    \\
                 );
                 for (method_params, 0..) |param, i| {
+                    const val_fmt_str = switch (getTypeFieldValue(param.schema) catch unreachable) {
+                        .object, .array => unreachable,
+                        .string => "{s}",
+                        .number, .integer => "{d}",
+                        .boolean => "{}",
+                    };
+
                     if (i == 0) try out_writer.print(
-                        \\            if (self.{s}) |val| {{
-                        \\                need_sep = true;
-                        \\                try writer.print("?{}={{any}}", .{{val}});
-                        \\            }}
+                    // zig fmt: off
+                    \\
+                    \\            if (self.{0s}) |val| {{
+                    \\                need_sep = true;
+                    \\                try writer.print("?{1}={2s}", .{{val}});
+                    \\            }}
+                    \\
+                    // zig fmt: on
                     , .{
                         std.zig.fmtId(param.name),
                         std.zig.fmtEscapes(param.name),
+                        val_fmt_str,
                     }) else try out_writer.print(
-                        \\            if (self.{0s}) |val| {{
-                        \\                if (need_sep) {{
-                        \\                    try writer.print("&{}={{any}}", .{{val}});
-                        \\                }} else {{
-                        \\                    need_sep = true;
-                        \\                    try writer.print("?{}={{any}}", .{{val}});
-                        \\                }}
-                        \\            }}
-                        \\
+                    // zig fmt: off
+                    \\            if (self.{0s}) |val| {{
+                    \\                if (need_sep) {{
+                    \\                    try writer.print("&{1}={2s}", .{{val}});
+                    \\                }} else {{
+                    \\                    need_sep = true;
+                    \\                    try writer.print("?{1}={2s}", .{{val}});
+                    \\                }}
+                    \\            }}
+                    \\
+                    // zig fmt: on
                     , .{
                         std.zig.fmtId(param.name),
                         std.zig.fmtEscapes(param.name),
+                        val_fmt_str,
                     });
                 }
-                try out_writer.print(
-                    \\        }}
-                    \\    }};
-                    \\
-                    \\    pub const RequestHead = struct {{
-                    \\        path: PathFmt,
-                    \\        query: QueryFmt,
-                    \\        version: @import("std").http.Version,
-                    \\
-                    \\        pub fn format(
-                    \\            self: RequestHead,
-                    \\            comptime fmt_str: []const u8,
-                    \\            options: @import("std").fmt.FormatOptions,
-                    \\            writer: anytype,
-                    \\        ) !void {{
-                    \\            _ = fmt_str;
-                    \\            _ = options;
-                    \\            try writer.print("{s} {{}}{{}} {{s}}", .{{
-                    \\                self.path, self.query, @tagName(self.version),
-                    \\            }});
-                    \\        }}
-                    \\
-                    \\    }};
+                try out_writer.writeAll(
+                    \\        }
+                    \\    };
                     \\
                     \\
-                , .{method_field.name});
+                );
 
                 const maybe_request_body: ?*const JsonObj = try getObjField(path_method_info, "requestBody", .object, null);
                 const empty_request_body_str = "        pub const RequestBody = struct {};\n";
