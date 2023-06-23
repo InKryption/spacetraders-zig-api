@@ -28,14 +28,57 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const params: Params = try Params.parseCurrentProcess(allocator, .params);
+    const params: Params = params: {
+        var diag: Params.ParseDiagnostic = undefined;
+        break :params Params.parseCurrentProcess(allocator, &diag) catch |err| {
+            switch (err) {
+                error.OutOfMemory => {},
+
+                error.EmptyArgv => |e| std.log.err("{s}", .{@errorName(e)}),
+
+                error.MissingDashDashPrefix => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg.? }),
+                error.UnrecognizedParameterName => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg.? }),
+                error.MissingArgumentValue,
+                error.InvalidParameterFlagValue,
+                error.InvalidParameterEnumValue,
+                => |e| std.log.err("{s} for '{s}' in '{s}'. Must be one of:\n{}", .{
+                    @errorName(e),
+                    @tagName(diag.last_param.?),
+                    if (diag.last_arg) |s| s else "null",
+                    struct {
+                        id: Params.Id,
+                        pub fn format(
+                            formatter: @This(),
+                            comptime _: []const u8,
+                            _: std.fmt.FormatOptions,
+                            writer: anytype,
+                        ) !void {
+                            switch (formatter.id) {
+                                inline else => |tag| {
+                                    const T = std.meta.FieldType(Params, tag);
+                                    const fields = switch (@typeInfo(@typeInfo(T).Optional.child)) {
+                                        .Enum => |info| info.fields,
+                                        else => unreachable,
+                                    };
+                                    inline for (fields) |field| {
+                                        try writer.writeAll("  * " ++ field.name ++ "\n");
+                                    }
+                                },
+                            }
+                        }
+                    }{ .id = diag.last_param.? },
+                }),
+            }
+            return err;
+        };
+    };
     defer params.deinit(allocator);
 
     runtime_log_level = params.log_level orelse return error.MissingLogLevelParam; // set log level before first log
     std.log.debug(
         \\parameters: {{
-        \\    .apidocs_path = "{?s}",
-        \\    .output_path = "{?s}",
+        \\    .apidocs_path = {?s},
+        \\    .output_path = {?s},
         \\    .number_format = {s},
         \\    .json_as_comment = {?},
         \\    .log_level = {s},
@@ -56,9 +99,6 @@ pub fn main() !void {
     const output_path: []const u8 = params.output_path orelse return error.MissingOutputPathParam;
     const number_format: NumberFormat = params.number_format orelse return error.MissingNumberFormatParam;
     const json_as_comment: bool = params.json_as_comment orelse return error.MissingJsonAsCommentParam;
-
-    const output_file = try std.fs.cwd().createFile(output_path, .{});
-    defer output_file.close();
 
     var output_buffer = std.ArrayList(u8).init(allocator);
     defer output_buffer.deinit();
@@ -697,6 +737,9 @@ pub fn main() !void {
 
     const formatted = try ast.render(allocator);
     defer allocator.free(formatted);
+
+    const output_file = try std.fs.cwd().createFile(output_path, .{});
+    defer output_file.close();
 
     try output_file.writer().writeAll(formatted);
 }

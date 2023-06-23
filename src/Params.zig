@@ -10,8 +10,8 @@ log_level: ?std.log.Level = null,
 
 const NumberFormat = @import("number-format.zig").NumberFormat;
 
-const ParamId = std.meta.FieldEnum(Params);
-inline fn paramIsFlag(id: ParamId) bool {
+pub const Id = std.meta.FieldEnum(Params);
+inline fn paramIsFlag(id: Params.Id) bool {
     return switch (id) {
         .apidocs_path => false,
         .output_path => false,
@@ -36,31 +36,44 @@ pub const ParseError = std.mem.Allocator.Error || error{
 
 pub fn parseCurrentProcess(
     allocator: std.mem.Allocator,
-    comptime log_scope: @TypeOf(.enum_literal),
+    diag: ?*ParseDiagnostic,
 ) (ParseError || error{EmptyArgv})!Params {
     var argv = try std.process.argsWithAllocator(allocator);
     defer argv.deinit();
     if (!argv.skip()) return error.EmptyArgv;
-    return try Params.parse(allocator, log_scope, &argv);
+    return try Params.parse(allocator, &argv, diag);
 }
+
+/// permutations:
+/// + last_param == null, last_arg == null: nothing returned from arg_iter
+/// + last_param != null, last_arg == null: valid param obtained, and then no argument following that
+/// + last_param == null, last_arg != null: error obtaining parameter id, last_arg represents the of the expected pair of args
+/// + last_param != null, last_arg != null: error in parsing said argument into expected type of param
+pub const ParseDiagnostic = struct {
+    last_param: ?Params.Id,
+    last_arg: ?[]const u8,
+};
 
 pub fn parse(
     allocator: std.mem.Allocator,
-    comptime log_scope: @TypeOf(.enum_literal),
     argv: anytype,
+    maybe_diag: ?*ParseDiagnostic,
 ) ParseError!Params {
-    const log_err = std.log.scoped(log_scope).err;
     var result: Params = .{};
     errdefer result.deinit(allocator);
 
     while (true) {
         var maybe_next_tok: ?[]const u8 = null;
 
-        const kebab_param_id = util.ReplaceEnumTagScalar(ParamId, '_', '-');
-        const id: Params.ParamId = id: {
-            const str = std.mem.trim(u8, argv.next() orelse break, &std.ascii.whitespace);
+        const kebab_param_id = util.ReplaceEnumTagScalar(Params.Id, '_', '-');
+        const id: Params.Params.Id = id: {
+            const full_str = argv.next() orelse break;
+            const str = std.mem.trim(u8, full_str, &std.ascii.whitespace);
             const maybe_name = util.stripPrefix(u8, str, "--") orelse {
-                log_err("Expected parameter id preceeded by '--', found '{s}'", .{str});
+                if (maybe_diag) |diag| diag.* = .{
+                    .last_param = null,
+                    .last_arg = full_str,
+                };
                 return error.MissingDashDashPrefix;
             };
             const name: []const u8 = if (std.mem.indexOfScalar(u8, maybe_name, '=')) |eql_idx| name: {
@@ -72,21 +85,27 @@ pub fn parse(
             } else maybe_name;
 
             const kebab_id = std.meta.stringToEnum(kebab_param_id.WithReplacement, name) orelse {
-                log_err("Unrecognized parameter name '{s}'", .{str});
+                if (maybe_diag) |diag| diag.* = .{
+                    .last_param = null,
+                    .last_arg = full_str,
+                };
                 return error.UnrecognizedParameterName;
             };
             break :id kebab_param_id.unmake(kebab_id);
         };
 
-        const next_tok: []const u8 = if (maybe_next_tok) |next_tok|
-            std.mem.trim(u8, next_tok, &std.ascii.whitespace)
-        else if (argv.next()) |next_tok| next_tok else blk: {
+        const next_arg = argv.next();
+        const next_tok: []const u8 = if (maybe_next_tok) |next_tok| blk: {
+            break :blk std.mem.trim(u8, next_tok, &std.ascii.whitespace);
+        } else next_arg orelse blk: {
             if (paramIsFlag(id)) break :blk "true";
-            log_err("Expected value for parameter '{s}'", .{@tagName(id)});
+            if (maybe_diag) |diag| diag.* = .{
+                .last_param = id,
+                .last_arg = null,
+            };
             return error.MissingArgumentValue;
         };
 
-        const id_kebab_name: []const u8 = @tagName(kebab_param_id.make(id));
         switch (id) {
             inline //
             .apidocs_path,
@@ -104,8 +123,13 @@ pub fn parse(
                     false = @intFromBool(false),
                     true = @intFromBool(true),
                 };
-                field_ptr.* = if (std.meta.stringToEnum(BoolTag, next_tok)) |bool_tag| @bitCast(bool, @intFromEnum(bool_tag)) else {
-                    log_err("Expected '{s}' to be a boolean, instead got '{s}'.", .{ id_kebab_name, next_tok });
+                field_ptr.* = if (std.meta.stringToEnum(BoolTag, next_tok)) |bool_tag|
+                    @bitCast(bool, @intFromEnum(bool_tag))
+                else {
+                    if (maybe_diag) |diag| diag.* = .{
+                        .last_param = id,
+                        .last_arg = next_arg,
+                    };
                     return error.InvalidParameterFlagValue;
                 };
             },
@@ -120,15 +144,10 @@ pub fn parse(
                     field_ptr.* = kebab_enum.unmake(kebab_tag);
                     continue;
                 }
-                const MemberListFmt = struct {
-                    pub fn format(_: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-                        inline for (@typeInfo(Enum).Enum.fields) |e_field|
-                            try writer.print("   * '{s}'\n", .{util.replaceScalarComptime(u8, e_field.name, '_', '-')});
-                    }
+                if (maybe_diag) |diag| diag.* = .{
+                    .last_param = id,
+                    .last_arg = next_arg,
                 };
-                log_err("'{s}' was passed invalid value '{s}' - must be one of:\n{}", .{
-                    id_kebab_name, next_tok, MemberListFmt{},
-                });
                 return error.InvalidParameterEnumValue;
             },
         }
