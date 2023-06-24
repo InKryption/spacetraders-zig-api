@@ -192,6 +192,19 @@ pub fn main() !void {
         for (paths_obj.keys(), paths_obj.values()) |path, *path_info_val| {
             for (0..3) |_| if (loop_arena_state.reset(.retain_capacity)) break;
 
+            if (path.len == 0) {
+                std.log.err("Encountered empty route", .{});
+                return error.EmptyRoute;
+            }
+            if (path[0] != '/') {
+                std.log.err("Encountered URI which doesn't begin with '/': '{s}'", .{path});
+                return error.InvalidRoute;
+            }
+            if (path.len > 1 and path[path.len - 1] == '/') {
+                std.log.err("Encountered URI which ends with '/': '{s}'", .{path});
+                return error.InvalidRoute;
+            }
+
             const path_info: *const JsonObj = switch (path_info_val.*) {
                 .object => |*object| object,
                 else => return error.NonObjectPathField,
@@ -228,60 +241,52 @@ pub fn main() !void {
             defer loop_arena.free(top_params);
 
             const path_segments: []const []const u8 = blk: {
-                var path_segments = std.ArrayList([]const u8).init(loop_arena);
-                defer {
-                    for (path_segments.items) |segment|
-                        loop_arena.free(segment);
-                    path_segments.deinit();
-                }
+                var path_segments = try std.ArrayList([]const u8).initCapacity(loop_arena, 3);
+                defer path_segments.deinit();
 
-                var path_iter = std.mem.tokenizeScalar(u8, path, '/');
-                while (path_iter.next()) |component| {
-                    // should we actually handle cases like 'foo//bar' with `std.mem.splitScalar`?
-                    assert(component.len >= 1);
-
-                    if (component[0] == '{') {
-                        if (component[component.len - 1] != '}') {
-                            std.log.err("Unclosed brace in path '{s}'", .{path});
-                            return error.UnclosedBraceInPath;
-                        }
-
-                        const duped = try loop_arena.dupe(u8, component);
-                        errdefer loop_arena.free(duped);
-
-                        try path_segments.append(duped);
-                    } else {
-                        if (path_segments.items.len == 0 or
-                            path_segments.getLast()[0] == '{')
-                        {
-                            try path_segments.append(try loop_arena.dupe(u8, component));
-                            continue;
-                        }
-                        const last = &path_segments.items[path_segments.items.len - 1];
-                        if (last.*[0] != '{') {
-                            const new = try loop_arena.realloc(@constCast(last.*), last.len + 1 + component.len);
-                            new[last.len] = '/';
-                            @memcpy(new[last.len + 1 ..], component);
-                            last.* = new;
-                        } else {
-                            assert(last.*[last.len - 1] == '}');
-                        }
-                        continue;
+                var start_idx: usize = 0;
+                while (std.mem.indexOfAnyPos(u8, path, start_idx, "{}")) |idx| {
+                    if (path[idx] != '{') {
+                        assert(path[idx] == '}');
+                        std.log.err("Unopened bracket in URI: '{s}'", .{path});
+                        return error.UnopenedUriParameterBracket;
                     }
-                    const param_name = component[1 .. component.len - 1];
+                    const literal_segment = path[start_idx..idx];
+                    try path_segments.append(literal_segment);
+
+                    const param_name_end = std.mem.indexOfAnyPos(u8, path, idx + 1, "{}") orelse {
+                        std.log.err("Unclosed bracket in URI: '{s}'", .{path});
+                        return error.UnclosedBracketInUri;
+                    };
+                    start_idx = param_name_end + 1;
+
+                    if (path[param_name_end] != '}') {
+                        assert(path[param_name_end] == '{');
+                        std.log.err("Unclosed bracket in URI: '{s}'", .{path});
+                        return error.UnclosedBracketInUri;
+                    }
+                    const param_segment = path[idx .. param_name_end + 1];
+                    try path_segments.append(param_segment);
+
+                    const param_name = param_segment[1 .. param_segment.len - 1];
 
                     // TODO: do more with .schema field?
                     const param: TopLevelParam = for (top_params) |param| {
-                        if (!std.mem.eql(u8, param.name, param_name)) continue;
-                        break param;
+                        if (std.mem.eql(u8, param.name, param_name)) break param;
                     } else {
                         std.log.err("Found substitution '{s}' in path '{s}' which is not defined as a parameter", .{ param_name, path });
                         return error.UnboundSubstitutionInPath;
                     };
+
                     if (!std.mem.eql(u8, param.in, "path")) return error.NonPathTopLevelParameter;
                     if (!param.required) return error.OptionalPathParameter;
                     const data_type = try getTypeFieldValue(param.schema);
                     if (data_type != .string) return error.NonStringPathParameter;
+                }
+
+                const last_literal_segment = path[start_idx..];
+                if (last_literal_segment.len != 0) {
+                    try path_segments.append(last_literal_segment);
                 }
 
                 break :blk try path_segments.toOwnedSlice();
@@ -358,18 +363,15 @@ pub fn main() !void {
                         try out_writer.writeAll("///\n");
                     try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
                 }
-                try out_writer.print(
-                    \\    pub const {s} = struct {{
-                    \\
-                , .{std.zig.fmtId(op_name)});
-                try out_writer.print(
-                    \\        pub const method = .{s};
-                    \\
-                , .{std.zig.fmtId(method_field.name)});
-                try out_writer.writeAll(
-                    \\        pub const RequestUri = stapi.RequestUri(@This());
-                    \\
-                );
+                try out_writer.print("    pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
+                try out_writer.print("        pub const method = .{s};\n\n", .{std.zig.fmtId(method_field.name)});
+
+                try out_writer.print("        /// '{s}", .{path});
+                for (method_params, 0..) |param, i| {
+                    const sep: u8 = if (i == 0) '?' else '&';
+                    try out_writer.print("{c}{s}=<value>", .{ sep, param.name });
+                } else try out_writer.writeAll("'\n");
+                try out_writer.writeAll("        pub const RequestUri = stapi.RequestUri(@This());\n\n");
                 try out_writer.print(
                     \\        /// '{s}'
                     \\        pub const PathFmt = struct {{
@@ -465,20 +467,16 @@ pub fn main() !void {
                     \\            if (fmt_str.len != 0) @import("std").fmt.invalidFmt(fmt_str, self);
                     \\
                 );
-                if (path_segments.len == 0) try out_writer.writeAll(
-                    \\            try writer.writeAll("/");
-                    \\
-                );
                 for (path_segments) |item| {
                     assert(item[0] != '{' or item[item.len - 1] == '}');
                     if (item[0] == '{') try out_writer.print(
                     // zig fmt: off
-                    \\            try writer.print("/{{s}}", .{{self.{s}}});
+                    \\            try writer.print("{{s}}", .{{self.{s}}});
                     \\
                     // zig fmt: on
                     , .{std.zig.fmtId(item[1 .. item.len - 1])}) else try out_writer.print(
                     // zig fmt: off
-                    \\            try writer.writeAll("/{}");
+                    \\            try writer.writeAll("{}");
                     \\
                     // zig fmt: on
                     , .{std.zig.fmtEscapes(item)});
@@ -568,7 +566,7 @@ pub fn main() !void {
                     }) else try out_writer.print(
                     // zig fmt: off
                     \\            if (self.{0s}) |val| {{
-                    \\                const sep = if (need_sep) '&' else '?';
+                    \\                const sep: u8 = if (need_sep) '&' else '?';
                     \\                need_sep = true;
                     \\                try writer.print("{{c}}{1}={2s}", .{{ sep, val }});
                     \\            }}
