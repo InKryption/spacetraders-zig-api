@@ -117,6 +117,11 @@ pub fn main() !void {
     var json_comment_buf = std.ArrayList(u8).init(allocator);
     defer json_comment_buf.deinit();
 
+    try out_writer.writeAll(
+        \\const stapi = @This();
+        \\
+        \\
+    );
     try out_writer.print(
         \\/// Represents a floating point number.
         \\pub const {s} = {s};
@@ -131,12 +136,11 @@ pub fn main() !void {
     });
     try out_writer.writeAll(
         \\
-        \\pub fn RequestUri(comptime operation: @import("std").meta.DeclEnum(ref)) type {
+        \\fn RequestUri(comptime Operation: type) type {
         \\    return  struct {
         \\        path: Operation.PathFmt,
         \\        query: Operation.QueryFmt,
         \\
-        \\        const Operation = @field(ref, @tagName(operation));
         \\        pub fn format(
         \\            self: @This(),
         \\            comptime fmt_str: []const u8,
@@ -355,11 +359,21 @@ pub fn main() !void {
                         try out_writer.writeAll("///\n");
                     try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
                 }
-                try out_writer.print("pub const {s} = struct {{\n", .{std.zig.fmtId(op_name)});
-                try out_writer.print("    pub const method = .{s};\n", .{std.zig.fmtId(method_field.name)});
                 try out_writer.print(
-                    \\    /// '{s}'
-                    \\    pub const PathFmt = struct {{
+                    \\    pub const {s} = struct {{
+                    \\
+                , .{std.zig.fmtId(op_name)});
+                try out_writer.print(
+                    \\        pub const method = .{s};
+                    \\
+                , .{std.zig.fmtId(method_field.name)});
+                try out_writer.writeAll(
+                    \\        pub const RequestUri = stapi.RequestUri(@This());
+                    \\
+                );
+                try out_writer.print(
+                    \\        /// '{s}'
+                    \\        pub const PathFmt = struct {{
                     \\
                 , .{path});
 

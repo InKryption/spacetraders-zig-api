@@ -16,7 +16,7 @@ test {
         get_system_waypoints.QueryFmt{ .limit = 20 },
     });
     try std.testing.expectFmt("/systems/system-symbol3/waypoints?limit=20", "{}", .{
-        api.RequestUri(.get_system_waypoints){
+        get_system_waypoints.RequestUri{
             .path = .{ .systemSymbol = "system-symbol3" },
             .query = .{ .limit = 20 },
         },
