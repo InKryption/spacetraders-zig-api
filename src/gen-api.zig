@@ -144,10 +144,9 @@ pub fn main() !void {
         \\        pub fn format(
         \\            self: @This(),
         \\            comptime fmt_str: []const u8,
-        \\            options: @import("std").fmt.FormatOptions,
+        \\            _: @import("std").fmt.FormatOptions,
         \\            writer: anytype,
         \\        ) !void {
-        \\            _ = options;
         \\            if (fmt_str.len != 0) @import("std").invalidFmtError(fmt_str, self);
         \\            try writer.print("{}{}", .{ self.path, self.query });
         \\        }
@@ -457,13 +456,12 @@ pub fn main() !void {
                     \\        pub fn format(
                     \\            self: @This(),
                     \\            comptime fmt_str: []const u8,
-                    \\            options: @import("std").fmt.FormatOptions,
+                    \\            _: @import("std").fmt.FormatOptions,
                     \\            writer: anytype,
                     \\        ) !void {
                     \\
                 );
                 try out_writer.writeAll(
-                    \\            _ = options;
                     \\            if (fmt_str.len != 0) @import("std").fmt.invalidFmt(fmt_str, self);
                     \\
                 );
@@ -534,10 +532,9 @@ pub fn main() !void {
                     \\        pub fn format(
                     \\            self: @This(),
                     \\            comptime fmt_str: []const u8,
-                    \\            options: @import("std").fmt.FormatOptions,
+                    \\            _: @import("std").fmt.FormatOptions,
                     \\            writer: anytype,
                     \\        ) !void {
-                    \\            _ = options;
                     \\
                 );
                 try out_writer.writeAll(if (method_params.len == 0)
@@ -571,12 +568,9 @@ pub fn main() !void {
                     }) else try out_writer.print(
                     // zig fmt: off
                     \\            if (self.{0s}) |val| {{
-                    \\                if (need_sep) {{
-                    \\                    try writer.print("&{1}={2s}", .{{val}});
-                    \\                }} else {{
-                    \\                    need_sep = true;
-                    \\                    try writer.print("?{1}={2s}", .{{val}});
-                    \\                }}
+                    \\                const sep = if (need_sep) '&' else '?';
+                    \\                need_sep = true;
+                    \\                try writer.print("{{c}}{1}={2s}", .{{ sep, val }});
                     \\            }}
                     \\
                     // zig fmt: on
