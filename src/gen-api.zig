@@ -36,15 +36,15 @@ pub fn main() !void {
 
                 error.EmptyArgv => |e| std.log.err("{s}", .{@errorName(e)}),
 
-                error.MissingDashDashPrefix => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg.? }),
-                error.UnrecognizedParameterName => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg.? }),
+                error.MissingDashDashPrefix => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg }),
+                error.UnrecognizedParameterName => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg }),
                 error.MissingArgumentValue,
                 error.InvalidParameterFlagValue,
                 error.InvalidParameterEnumValue,
                 => |e| std.log.err("{s} for '{s}' in '{s}'. Must be one of:\n{}", .{
                     @errorName(e),
-                    @tagName(diag.last_param.?),
-                    if (diag.last_arg) |s| s else "null",
+                    @tagName(diag.parsed_id.?),
+                    diag.last_arg,
                     struct {
                         id: Params.Id,
                         pub fn format(
@@ -66,7 +66,7 @@ pub fn main() !void {
                                 },
                             }
                         }
-                    }{ .id = diag.last_param.? },
+                    }{ .id = diag.parsed_id.? },
                 }),
             }
             return err;

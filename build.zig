@@ -27,7 +27,7 @@ pub fn runGenerator(
         "--log-level",       @tagName(args.log_level),
     });
 
-    return generator.addPrefixedOutputFileArg("--output-path=", args.output_name);
+    return generator.addPrefixedOutputFileArg("--output-path ", args.output_name);
 }
 
 pub fn build(b: *Build) void {
