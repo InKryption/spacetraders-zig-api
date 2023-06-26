@@ -41,11 +41,9 @@ pub fn main() !void {
                 error.MissingArgumentValue,
                 error.InvalidParameterFlagValue,
                 error.InvalidParameterEnumValue,
-                => |e| std.log.err("{s} for '{s}' in '{s}'. Must be one of:\n{}", .{
-                    @errorName(e),
-                    @tagName(diag.parsed_id.?),
-                    diag.last_arg,
-                    struct {
+                => |e| std.log.err(
+                    "{s} for '{s}' in '{s}'. Must be one of:\n{}",
+                    .{ @errorName(e), @tagName(diag.parsed_id.?), diag.last_arg, struct {
                         id: Params.Id,
                         pub fn format(
                             formatter: @This(),
@@ -66,8 +64,8 @@ pub fn main() !void {
                                 },
                             }
                         }
-                    }{ .id = diag.parsed_id.? },
-                }),
+                    }{ .id = diag.parsed_id.? } },
+                ),
             }
             return err;
         };
