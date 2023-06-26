@@ -393,9 +393,7 @@ pub fn main() !void {
                         if (param.description) |desc| {
                             try util.writeLinesSurrounded(out_writer, "/// ", desc, "\n");
                         }
-                        try out_writer.print(
-                            \\        {s}: 
-                        , .{std.zig.fmtId(param.name)});
+                        try out_writer.print("        {s}: ", .{std.zig.fmtId(param.name)});
                         if (!param.required) try out_writer.writeAll("?");
 
                         var decl_name = try std.mem.concat(allocator, u8, &.{
@@ -409,10 +407,7 @@ pub fn main() !void {
                                 std.log.err("Non-primitive '{s}' type in path parameter", .{@tagName(tag)});
                                 return error.NonPrimitivePathParameter;
                             },
-                            .string => {
-                                if (param.schema.contains("enum")) {
-                                    std.log.warn("TODO: handle enum in path parameter", .{});
-                                }
+                            .string => if (!param.schema.contains("enum")) {
                                 try out_writer.writeAll("[]const u8,\n");
                                 continue;
                             },
@@ -431,27 +426,25 @@ pub fn main() !void {
                             .name = decl_name,
                             .schema = param.schema,
                         });
-                        decl_name = &.{}; // make freeing a noop out to avoid UAF
+                        decl_name = &.{}; // make freeing a noop to avoid UAF
                     }
                     try out_writer.writeAll("\n");
 
                     std.mem.reverse(ListEntry, list.items); // pop in reverse order to retain the original order
+                    try render_stack.ensureTotalCapacity(1);
                     while (list.popOrNull()) |entry| {
                         render_stack.clearRetainingCapacity();
-                        try render_stack.append(.{ .type_decl = .{
+                        render_stack.appendAssumeCapacity(.{ .type_decl = .{
                             .name = entry.name,
                             .json_obj = entry.schema,
                         } });
-                        try renderApiType(
-                            out_writer,
-                            RenderApiTypeParams{
-                                .allocator = allocator,
-                                .render_stack = &render_stack,
-                                .current_dir_path = "./reference",
-                                .required_refs = &required_model_refs,
-                                .json_comment_buf = null,
-                            },
-                        );
+                        try renderApiType(out_writer, RenderApiTypeParams{
+                            .allocator = allocator,
+                            .render_stack = &render_stack,
+                            .current_dir_path = "./reference",
+                            .required_refs = &required_model_refs,
+                            .json_comment_buf = null,
+                        });
                     }
                 }
                 try out_writer.writeAll(
@@ -600,20 +593,16 @@ pub fn main() !void {
                     }
 
                     render_stack.clearRetainingCapacity();
-                    try renderApiTypeWith(
-                        out_writer,
-                        RenderStackCmd.TypeDecl{
-                            .name = "RequestBody",
-                            .json_obj = schema,
-                        },
-                        RenderApiTypeParams{
-                            .allocator = allocator,
-                            .render_stack = &render_stack,
-                            .current_dir_path = "./reference",
-                            .required_refs = &required_model_refs,
-                            .json_comment_buf = null,
-                        },
-                    );
+                    try renderApiTypeWith(out_writer, RenderStackCmd.TypeDecl{
+                        .name = "RequestBody",
+                        .json_obj = schema,
+                    }, RenderApiTypeParams{
+                        .allocator = allocator,
+                        .render_stack = &render_stack,
+                        .current_dir_path = "./reference",
+                        .required_refs = &required_model_refs,
+                        .json_comment_buf = null,
+                    });
                 } else {
                     try out_writer.writeAll(empty_request_body_str);
                 }
@@ -639,20 +628,16 @@ pub fn main() !void {
                         .created,
                         => |tag| {
                             render_stack.clearRetainingCapacity();
-                            try renderApiTypeWith(
-                                out_writer,
-                                RenderStackCmd.TypeDecl{
-                                    .name = @tagName(tag),
-                                    .json_obj = try getContentApplicationJsonSchema(response_info),
-                                },
-                                RenderApiTypeParams{
-                                    .allocator = allocator,
-                                    .render_stack = &render_stack,
-                                    .current_dir_path = "./reference",
-                                    .required_refs = &required_model_refs,
-                                    .json_comment_buf = null,
-                                },
-                            );
+                            try renderApiTypeWith(out_writer, RenderStackCmd.TypeDecl{
+                                .name = @tagName(tag),
+                                .json_obj = try getContentApplicationJsonSchema(response_info),
+                            }, RenderApiTypeParams{
+                                .allocator = allocator,
+                                .render_stack = &render_stack,
+                                .current_dir_path = "./reference",
+                                .required_refs = &required_model_refs,
+                                .json_comment_buf = null,
+                            });
                         },
                         .no_content => |tag| try out_writer.print("pub const {s} = void;\n\n", .{@tagName(tag)}),
                         else => |tag| {
@@ -699,23 +684,19 @@ pub fn main() !void {
             const model_json = try std.json.parseFromSliceLeaky(std.json.Value, loop_arena, model_file_contents, .{});
 
             render_stack.clearRetainingCapacity();
-            try renderApiTypeWith(
-                out_writer,
-                RenderStackCmd.TypeDecl{
-                    .name = std.fs.path.stem(ref),
-                    .json_obj = switch (model_json) {
-                        .object => |*obj| obj,
-                        else => return error.NonObjectModelFile,
-                    },
+            try renderApiTypeWith(out_writer, RenderStackCmd.TypeDecl{
+                .name = std.fs.path.stem(ref),
+                .json_obj = switch (model_json) {
+                    .object => |*obj| obj,
+                    else => return error.NonObjectModelFile,
                 },
-                RenderApiTypeParams{
-                    .allocator = allocator,
-                    .render_stack = &render_stack,
-                    .current_dir_path = "./models",
-                    .required_refs = &required_model_refs,
-                    .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
-                },
-            );
+            }, RenderApiTypeParams{
+                .allocator = allocator,
+                .render_stack = &render_stack,
+                .current_dir_path = "./models",
+                .required_refs = &required_model_refs,
+                .json_comment_buf = if (json_as_comment) &json_comment_buf else null,
+            });
         }
 
         try out_writer.writeAll("};\n\n");
