@@ -7,6 +7,7 @@ test {
             .path = .{},
             .query = .{
                 .limit = 20,
+                .page = null,
             },
         },
     });
@@ -24,6 +25,7 @@ test {
             .path = .{},
             .query = .{
                 .limit = 7,
+                .page = null,
             },
         },
     });

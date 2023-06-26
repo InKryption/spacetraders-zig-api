@@ -507,7 +507,7 @@ pub fn main() !void {
                                 if (param.schema.contains("enum")) {
                                     std.log.warn("TODO: handle enum in query parameter", .{});
                                 }
-                                try out_writer.writeAll("[]const u8 = null,\n");
+                                try out_writer.writeAll("[]const u8,\n");
                                 continue;
                             },
                             inline //
@@ -516,7 +516,7 @@ pub fn main() !void {
                             .boolean,
                             => |itag| {
                                 try writeSimpleType(out_writer, itag, param.schema);
-                                try out_writer.writeAll(" = null,\n");
+                                try out_writer.writeAll(",\n");
                                 continue;
                             },
                         }
