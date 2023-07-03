@@ -13,28 +13,30 @@ pub fn writeLinesSurrounded(writer: anytype, prefix: []const u8, lines: []const 
     }
 }
 
-pub inline fn fmtJson(value: std.json.Value, options: std.json.StringifyOptions) FmtJson {
+pub inline fn fmtJson(value: anytype, options: std.json.StringifyOptions) FmtJson(@TypeOf(value)) {
     return .{
         .value = value,
         .options = options,
     };
 }
-const FmtJson = struct {
-    value: std.json.Value,
-    options: std.json.StringifyOptions,
+pub fn FmtJson(comptime T: type) type {
+    return struct {
+        value: T,
+        options: std.json.StringifyOptions,
 
-    pub fn format(
-        self: FmtJson,
-        comptime fmt_str: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) @TypeOf(writer).Error!void {
-        _ = options;
-        if (fmt_str.len != 0) std.fmt.invalidFmtError(fmt_str, self);
-        try self.value.jsonStringify(self.options, writer);
-    }
-};
-
+        const Self = @This();
+        pub fn format(
+            self: Self,
+            comptime fmt_str: []const u8,
+            options: std.fmt.FormatOptions,
+            writer: anytype,
+        ) @TypeOf(writer).Error!void {
+            _ = options;
+            if (fmt_str.len != 0) std.fmt.invalidFmtError(fmt_str, self);
+            try std.json.stringify(self.value, self.options, writer);
+        }
+    };
+}
 pub inline fn replaceScalarComptime(
     comptime T: type,
     comptime input: []const T,
@@ -66,33 +68,41 @@ fn replaceScalarComptimeImpl(
     return &result;
 }
 
-pub fn ReplaceEnumTagScalar(
-    comptime T: type,
+pub fn EnumSnakeToKebabCase(comptime E: type) type {
+    return EnumReplaceNameScalar(E, '_', '-');
+}
+pub inline fn enumSnakeToKebabCase(value: anytype) EnumSnakeToKebabCase(@TypeOf(value)) {
+    return enumReplaceNameScalar(value, '_', '-');
+}
+pub inline fn enumKebabToSnakeCase(comptime E: type, value: EnumSnakeToKebabCase(E)) E {
+    return enumUnreplaceNameScalar(E, '_', '-', value);
+}
+
+pub fn EnumReplaceNameScalar(comptime E: type, comptime needle: u8, comptime replacement: u8) type {
+    const info = @typeInfo(E).Enum;
+    var fields = info.fields[0..].*;
+    for (&fields) |*field| {
+        field.name = replaceScalarComptime(u8, field.name, needle, replacement);
+    }
+    var new_info = info;
+    new_info.fields = &fields;
+    new_info.decls = &.{};
+    return @Type(.{ .Enum = new_info });
+}
+pub inline fn enumReplaceNameScalar(
+    value: anytype,
     comptime needle: u8,
     comptime replacement: u8,
-) type {
-    return struct {
-        pub const Original = T;
-        pub const WithReplacement = T: {
-            if (needle == replacement) break :T T;
-            const old = @typeInfo(T).Enum;
-            var fields = old.fields[0..].*;
-            for (&fields) |*field|
-                field.name = replaceScalarComptime(u8, field.name, needle, replacement);
-            break :T @Type(.{ .Enum = .{
-                .tag_type = old.tag_type,
-                .is_exhaustive = old.is_exhaustive,
-                .decls = &.{},
-                .fields = &fields,
-            } });
-        };
-        pub inline fn make(value: Original) WithReplacement {
-            return @enumFromInt(@intFromEnum(value));
-        }
-        pub inline fn unmake(value: WithReplacement) Original {
-            return @enumFromInt(@intFromEnum(value));
-        }
-    };
+) EnumReplaceNameScalar(@TypeOf(value), needle, replacement) {
+    return @enumFromInt(@intFromEnum(value));
+}
+pub inline fn enumUnreplaceNameScalar(
+    comptime E: type,
+    comptime needle: u8,
+    comptime replacement: u8,
+    value: EnumReplaceNameScalar(E, needle, replacement),
+) E {
+    return @enumFromInt(@intFromEnum(value));
 }
 
 /// Returns the smallest integer type that can hold both from and to.
@@ -140,4 +150,187 @@ pub inline fn writeIntTypeName(
             try writer.print(sign_prefix ++ "{d}", .{info.bits});
         },
     }
+}
+
+pub fn EnumFromJsonStringSourceError(comptime Source: type) type {
+    return std.json.ParseFromValueError ||
+        Source.PeekError ||
+        Source.NextError;
+}
+
+/// parse an enum from from a json string.
+/// asserts `(try source.peekNextTokenType()) == .string`
+pub inline fn enumFromJsonStringSource(
+    comptime E: type,
+    source: anytype,
+) EnumFromJsonStringSourceError(@TypeOf(source.*))!?E {
+    assert((try source.peekNextTokenType()) == .string);
+
+    var pse = ProgressiveStringToEnum(E){};
+    while (true) {
+        switch (try source.next()) {
+            inline //
+            .partial_string,
+            .partial_string_escaped_1,
+            .partial_string_escaped_2,
+            .partial_string_escaped_3,
+            .partial_string_escaped_4,
+            => |str| if (!pse.append(str[0..])) {
+                return error.UnknownField;
+            },
+            .string => |str| {
+                if (str.len != 0 and !pse.append(str)) {
+                    return error.UnknownField;
+                }
+                break;
+            },
+            else => unreachable,
+        }
+    }
+    return pse.getMatch();
+}
+
+pub fn ProgressiveStringToEnum(comptime E: type) type {
+    const info = @typeInfo(E).Enum;
+    return struct {
+        current_index: usize = 0,
+        query_len: usize = 0,
+        const Self = @This();
+
+        pub inline fn getMatch(pse: Self) ?E {
+            const candidate = pse.getClosestCandidate() orelse return null;
+            const str = @tagName(candidate);
+            if (str.len > pse.query_len) return null;
+            assert(str.len == pse.query_len);
+            return candidate;
+        }
+
+        pub inline fn getMatchedSubstring(pse: Self) ?[]const u8 {
+            if (pse.current_index == sorted.tags.len) return null;
+            const candidate = @tagName(sorted.tags[pse.current_index]);
+            return candidate[0..pse.query_len];
+        }
+
+        pub inline fn getClosestCandidate(pse: Self) ?E {
+            if (pse.current_index == sorted.tags.len) return null;
+            if (pse.query_len == 0) return null;
+            return sorted.tags[pse.current_index];
+        }
+
+        /// asserts that `segment.len != 0`
+        pub fn append(pse: *Self, segment: []const u8) bool {
+            assert(segment.len != 0);
+            if (pse.current_index == sorted.tags.len) return false;
+
+            const prefix = @tagName(sorted.tags[pse.current_index])[0..pse.query_len];
+            while (pse.current_index != sorted.tags.len) : (pse.current_index += 1) {
+                const candidate_tag: E = sorted.tags[pse.current_index];
+                if (!std.mem.startsWith(u8, @tagName(candidate_tag), prefix)) {
+                    pse.current_index = sorted.tags.len;
+                    return false;
+                }
+                const remaining = @tagName(candidate_tag)[prefix.len..];
+                if (remaining.len < segment.len) continue;
+                if (!std.mem.startsWith(u8, remaining, segment)) continue;
+                pse.query_len += segment.len;
+                return true;
+            }
+
+            pse.current_index = sorted.tags.len;
+            return false;
+        }
+
+        const sorted = blk: {
+            var tags: [info.fields.len]E = undefined;
+            @setEvalBranchQuota(tags.len);
+            for (&tags, info.fields) |*tag, field| {
+                tag.* = @field(E, field.name);
+            }
+
+            // sort
+            @setEvalBranchQuota(@min(std.math.maxInt(u32), tags.len * tags.len));
+            for (tags[0 .. tags.len - 1], 0..) |*tag_a, i| {
+                for (tags[i + 1 ..]) |*tag_b| {
+                    if (!std.mem.lessThan(u8, @tagName(tag_a.*), @tagName(tag_b.*))) {
+                        std.mem.swap(E, tag_a, tag_b);
+                    }
+                }
+            }
+
+            break :blk .{
+                .tags = tags,
+            };
+        };
+    };
+}
+
+fn testProgressiveStringToEnum(comptime E: type) !void {
+    const Pse = ProgressiveStringToEnum(E);
+    var pse = Pse{};
+    for (comptime std.enums.values(E)) |value| {
+        const field_name = @tagName(value);
+
+        pse = .{};
+        try std.testing.expectEqualStrings("", try (pse.getMatchedSubstring() orelse error.ExpectedNonNull));
+        try std.testing.expectEqual(@as(?E, null), pse.getClosestCandidate());
+        try std.testing.expectEqual(@as(?E, null), pse.getMatch());
+
+        try std.testing.expect(pse.append(field_name));
+        try std.testing.expectEqualStrings(field_name, try (pse.getMatchedSubstring() orelse error.ExpectedNonNull));
+        try std.testing.expectEqual(@as(?E, value), pse.getClosestCandidate());
+        try std.testing.expectEqual(@as(?E, value), pse.getMatch());
+
+        try std.testing.expect(!pse.append(comptime non_matching: {
+            const lexicographic_biggest = Pse.sorted.tags[Pse.sorted.tags.len - 1];
+            break :non_matching @tagName(lexicographic_biggest) ++ "-no-match";
+        }));
+        try std.testing.expectEqual(@as(?[]const u8, null), pse.getMatchedSubstring());
+        try std.testing.expectEqual(@as(?E, null), pse.getClosestCandidate());
+        try std.testing.expectEqual(@as(?E, null), pse.getMatch());
+
+        for (1..field_name.len + 1) |max_seg_size| {
+            pse = .{};
+            var segment_iter = std.mem.window(u8, field_name, max_seg_size, max_seg_size);
+            while (segment_iter.next()) |segment| {
+                try std.testing.expectStringStartsWith(field_name, try (pse.getMatchedSubstring() orelse error.ExpectedNonNull));
+                try std.testing.expect(pse.append(segment));
+                try std.testing.expect(pse.getClosestCandidate() != null);
+            }
+            try std.testing.expectEqualStrings(field_name, try (pse.getMatchedSubstring() orelse error.ExpectedNonNull));
+            try std.testing.expectEqual(@as(?E, value), pse.getClosestCandidate());
+            try std.testing.expectEqual(@as(?E, value), pse.getMatch());
+        }
+    }
+}
+
+test ProgressiveStringToEnum {
+    const E = enum {
+        foo,
+        bar,
+        baz,
+        fizz,
+        buzz,
+    };
+    var pste = ProgressiveStringToEnum(E){};
+    try std.testing.expectEqual(@as(?E, null), pste.getMatch());
+    try std.testing.expectEqual(@as(?E, null), pste.getClosestCandidate());
+    try std.testing.expectEqualStrings("", try (pste.getMatchedSubstring() orelse error.ExpectedNonNull));
+
+    try std.testing.expect(pste.append("ba"));
+    try std.testing.expectEqualStrings("ba", try (pste.getMatchedSubstring() orelse error.ExpectedNonNull));
+    _ = try (pste.getClosestCandidate() orelse error.ExpectedNonNull);
+
+    try std.testing.expect(pste.append("z"));
+    try std.testing.expectEqualStrings("baz", try (pste.getMatchedSubstring() orelse error.ExpectedNonNull));
+    _ = try (pste.getClosestCandidate() orelse error.ExpectedNonNull);
+
+    try std.testing.expectEqual(@as(?E, .baz), pste.getMatch());
+
+    try std.testing.expect(!pste.append("z"));
+    try std.testing.expectEqual(@as(?E, null), pste.getMatch());
+    try std.testing.expectEqual(@as(?[]const u8, null), pste.getMatchedSubstring());
+    try std.testing.expectEqual(@as(?E, null), pste.getClosestCandidate());
+
+    try testProgressiveStringToEnum(enum { adlk, bnae, aaeg, cvxz, fadsfea, vafa, zvcxer, ep, afeap, lapqqokf });
+    try testProgressiveStringToEnum(enum { a, ab, abcd, bcdefg, bcde, xy, xz, xyz, xyzzz });
 }

@@ -22,7 +22,7 @@ pub fn runGenerator(
     generator.addDirectorySourceArg(args.apidocs_dir);
 
     generator.addArgs(&.{
-        "--number-format",   @tagName(util.ReplaceEnumTagScalar(NumberFormat, '_', '-').make(args.number_format)),
+        "--number-format",   @tagName(util.enumSnakeToKebabCase(args.number_format)),
         "--json-as-comment", if (args.json_as_comment) "true" else "false",
         "--log-level",       @tagName(args.log_level),
     });

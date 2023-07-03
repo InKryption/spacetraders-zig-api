@@ -36,14 +36,14 @@ pub fn main() !void {
 
                 error.EmptyArgv => |e| std.log.err("{s}", .{@errorName(e)}),
 
-                error.MissingDashDashPrefix => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg }),
-                error.UnrecognizedParameterName => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg }),
+                error.MissingDashDashPrefix,
+                error.UnrecognizedParameterName,
+                => |e| std.log.err("{s} in '{s}'", .{ @errorName(e), diag.last_arg }),
                 error.MissingArgumentValue,
                 error.InvalidParameterFlagValue,
                 error.InvalidParameterEnumValue,
-                => |e| std.log.err(
-                    "{s} for '{s}' in '{s}'. Must be one of:\n{}",
-                    .{ @errorName(e), @tagName(diag.parsed_id.?), diag.last_arg, struct {
+                => |e| {
+                    const ListFmt = struct {
                         id: Params.Id,
                         pub fn format(
                             formatter: @This(),
@@ -51,21 +51,28 @@ pub fn main() !void {
                             _: std.fmt.FormatOptions,
                             writer: anytype,
                         ) !void {
-                            switch (formatter.id) {
-                                inline else => |tag| {
+                            const possible_strings = switch (formatter.id) {
+                                inline else => |tag| blk: {
                                     const T = std.meta.FieldType(Params, tag);
-                                    const fields = switch (@typeInfo(@typeInfo(T).Optional.child)) {
-                                        .Enum => |info| info.fields,
+                                    break :blk switch (@typeInfo(T)) {
+                                        .Enum => std.meta.fieldNames(T),
+                                        .Bool => &[_][]const u8{ "true", "false" },
                                         else => unreachable,
                                     };
-                                    inline for (fields) |field| {
-                                        try writer.writeAll("  * " ++ field.name ++ "\n");
-                                    }
                                 },
+                            };
+                            for (possible_strings) |str| {
+                                try writer.print("  * {s}\n", .{str});
                             }
                         }
-                    }{ .id = diag.parsed_id.? } },
-                ),
+                    };
+                    std.log.err("{s} for '{s}' in '{s}'. Must be one of:\n{}", .{
+                        @errorName(e),
+                        @tagName(diag.parsed_id.?),
+                        diag.last_arg,
+                        ListFmt{ .id = diag.parsed_id.? },
+                    });
+                },
             }
             return err;
         };
@@ -148,7 +155,6 @@ pub fn main() !void {
         \\            if (fmt_str.len != 0) @import("std").invalidFmtError(fmt_str, self);
         \\            try writer.print("{}{}", .{ self.path, self.query });
         \\        }
-        \\
         \\    };
         \\}
         \\
@@ -1203,7 +1209,6 @@ fn getRefFieldValue(json_obj: *const JsonObj) GetRefFieldValueError!?[]const u8 
         @intFromBool(json_obj.contains("example")) +
         @intFromBool(json_obj.contains("description"));
     if (json_obj.count() != expected_count) {
-        std.debug.print("{}", .{util.fmtJson(.{ .object = json_obj.* }, .{})});
         return error.NotAlone;
     }
     const str = switch (val) {

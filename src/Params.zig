@@ -56,7 +56,6 @@ pub fn parse(
     while (true) {
         var maybe_next_tok: ?[]const u8 = null;
 
-        const kebab_param_id = util.ReplaceEnumTagScalar(Params.Id, '_', '-');
         const id: Params.Params.Id = id: {
             const full_str = argv.next() orelse break;
             if (maybe_diag) |diag| diag.last_arg = full_str;
@@ -72,10 +71,10 @@ pub fn parse(
                 break :name maybe_name[0..eql_idx];
             } else maybe_name;
 
-            const kebab_id = std.meta.stringToEnum(kebab_param_id.WithReplacement, name) orelse {
+            const kebab_id = std.meta.stringToEnum(util.EnumSnakeToKebabCase(Params.Id), name) orelse {
                 return error.UnrecognizedParameterName;
             };
-            break :id kebab_param_id.unmake(kebab_id);
+            break :id util.enumKebabToSnakeCase(Params.Id, kebab_id);
         };
         if (maybe_diag) |diag| diag.parsed_id = id;
 
@@ -114,9 +113,8 @@ pub fn parse(
             => |tag| {
                 const field_ptr = &@field(result, @tagName(tag));
                 const Enum = @TypeOf(field_ptr.*.?);
-                const kebab_enum = util.ReplaceEnumTagScalar(Enum, '_', '-');
-                if (std.meta.stringToEnum(kebab_enum.WithReplacement, next_tok)) |kebab_tag| {
-                    field_ptr.* = kebab_enum.unmake(kebab_tag);
+                if (std.meta.stringToEnum(util.EnumSnakeToKebabCase(Enum), next_tok)) |kebab_tag| {
+                    field_ptr.* = util.enumKebabToSnakeCase(Enum, kebab_tag);
                     continue;
                 }
                 return error.InvalidParameterEnumValue;
