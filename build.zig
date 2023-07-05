@@ -1,7 +1,7 @@
 const std = @import("std");
 const Build = std.Build;
 
-const util = @import("src/util.zig");
+const util = @import("src/util/util.zig");
 pub const NumberFormat = @import("src/number-format.zig").NumberFormat;
 
 pub const RunGeneratorArgs = struct {
@@ -38,6 +38,10 @@ pub fn build(b: *Build) void {
     const json_as_comment = b.option(bool, "json_as_comment", "Print json schema of types as comments on the outputted types.") orelse false;
     const log_level = b.option(std.log.Level, "log_level", "Specifies the log level of the executable") orelse .warn;
 
+    const util_mod = b.createModule(Build.CreateModuleOptions{
+        .source_file = Build.FileSource.relative("src/util/util.zig"),
+    });
+
     const generate_api = b.addExecutable(.{
         .name = "gen-api",
         .root_source_file = Build.FileSource.relative("src/gen-api.zig"),
@@ -45,23 +49,22 @@ pub fn build(b: *Build) void {
         .optimize = optimize,
     });
     b.installArtifact(generate_api);
+    generate_api.addModule("util", util_mod);
 
-    const generated_api_src =
-        if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir|
-    blk: {
-        const generate_api_run = b.addRunArtifact(generate_api);
-        break :blk runGenerator(generate_api_run, .{
+    const generated_api_src = if (b.option([]const u8, "apidocs", "Path to api-docs directory")) |apidocs_dir|
+        runGenerator(b.addRunArtifact(generate_api), .{
             .number_format = number_format,
             .json_as_comment = json_as_comment,
             .log_level = log_level,
             .apidocs_dir = .{ .path = apidocs_dir },
-        });
-    } else b.addWriteFiles().add("error.zig",
-        \\comptime {
-        \\    @compileError("Pass the 'apidocs' build option in order to make the generated API available. Otherwise you should generate the API manually.");
-        \\}
-        \\
-    );
+        })
+    else
+        b.addWriteFiles().add("error.zig",
+            \\comptime {
+            \\    @compileError("Pass the 'apidocs' build option in order to make the generated API available. Otherwise you should generate the API manually.");
+            \\}
+            \\
+        );
 
     _ = b.addModule("api", Build.CreateModuleOptions{
         .source_file = generated_api_src,

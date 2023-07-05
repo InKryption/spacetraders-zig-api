@@ -1,6 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+pub const json = @import("json.zig");
+
 pub inline fn stripPrefix(comptime T: type, str: []const u8, prefix: []const T) ?[]const u8 {
     if (!std.mem.startsWith(T, str, prefix)) return null;
     return str[prefix.len..];
@@ -13,30 +15,6 @@ pub fn writeLinesSurrounded(writer: anytype, prefix: []const u8, lines: []const 
     }
 }
 
-pub inline fn fmtJson(value: anytype, options: std.json.StringifyOptions) FmtJson(@TypeOf(value)) {
-    return .{
-        .value = value,
-        .options = options,
-    };
-}
-pub fn FmtJson(comptime T: type) type {
-    return struct {
-        value: T,
-        options: std.json.StringifyOptions,
-
-        const Self = @This();
-        pub fn format(
-            self: Self,
-            comptime fmt_str: []const u8,
-            options: std.fmt.FormatOptions,
-            writer: anytype,
-        ) @TypeOf(writer).Error!void {
-            _ = options;
-            if (fmt_str.len != 0) std.fmt.invalidFmtError(fmt_str, self);
-            try std.json.stringify(self.value, self.options, writer);
-        }
-    };
-}
 pub inline fn replaceScalarComptime(
     comptime T: type,
     comptime input: []const T,
@@ -152,44 +130,6 @@ pub inline fn writeIntTypeName(
     }
 }
 
-pub fn EnumFromJsonStringSourceError(comptime Source: type) type {
-    return std.json.ParseFromValueError ||
-        Source.PeekError ||
-        Source.NextError;
-}
-
-/// parse an enum from from a json string.
-/// asserts `(try source.peekNextTokenType()) == .string`
-pub inline fn enumFromJsonStringSource(
-    comptime E: type,
-    source: anytype,
-) EnumFromJsonStringSourceError(@TypeOf(source.*))!?E {
-    assert((try source.peekNextTokenType()) == .string);
-
-    var pse = ProgressiveStringToEnum(E){};
-    while (true) {
-        switch (try source.next()) {
-            inline //
-            .partial_string,
-            .partial_string_escaped_1,
-            .partial_string_escaped_2,
-            .partial_string_escaped_3,
-            .partial_string_escaped_4,
-            => |str| if (!pse.append(str[0..])) {
-                return error.UnknownField;
-            },
-            .string => |str| {
-                if (str.len != 0 and !pse.append(str)) {
-                    return error.UnknownField;
-                }
-                break;
-            },
-            else => unreachable,
-        }
-    }
-    return pse.getMatch();
-}
-
 pub fn ProgressiveStringToEnum(comptime E: type) type {
     const info = @typeInfo(E).Enum;
     return struct {
@@ -213,8 +153,9 @@ pub fn ProgressiveStringToEnum(comptime E: type) type {
 
         pub inline fn getClosestCandidate(pse: Self) ?E {
             if (pse.current_index == sorted.tags.len) return null;
-            if (pse.query_len == 0) return null;
-            return sorted.tags[pse.current_index];
+            const closest = sorted.tags[pse.current_index];
+            if (pse.query_len == 0 and @tagName(closest).len != 0) return null;
+            return closest;
         }
 
         /// asserts that `segment.len != 0`

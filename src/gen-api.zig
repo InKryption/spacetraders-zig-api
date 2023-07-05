@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const util = @import("util.zig");
+const util = @import("util");
 const Params = @import("Params.zig");
 
 const NumberFormat = @import("number-format.zig").NumberFormat;
@@ -783,7 +783,7 @@ fn writeJsonAsComment(
     json_comment_buf: *std.ArrayList(u8),
 ) !void {
     json_comment_buf.clearRetainingCapacity();
-    try json_comment_buf.writer().print("{}", .{util.fmtJson(
+    try json_comment_buf.writer().print("{}", .{util.json.fmtStringify(
         json_value,
         std.json.StringifyOptions{ .whitespace = .{ .indent = .{ .space = 4 } } },
     )});
