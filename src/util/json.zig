@@ -69,7 +69,7 @@ pub fn nextProgressiveFieldToEnum(
     pse: *util.ProgressiveStringToEnum(E),
 ) (@TypeOf(source.*).PeekError || @TypeOf(source.*).NextError || error{UnexpectedToken})!bool {
     switch (try source.peekNextTokenType()) {
-        else => return error.UnexpectedToken,
+        else => unreachable,
         .object_end => {
             assert(try source.next() == .object_end);
             return false;
