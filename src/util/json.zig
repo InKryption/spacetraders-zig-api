@@ -32,7 +32,7 @@ pub fn FmtStringify(comptime T: type) type {
 /// if `error.BufferOverrun` occurs, this can be called again with
 /// the same `pse` to continue (the `pse` is not cleared or reset
 /// at any point).
-pub inline fn nextProgressiveStringToEnum(
+pub fn nextProgressiveStringToEnum(
     source: anytype,
     comptime E: type,
     pse: *util.ProgressiveStringToEnum(E),
@@ -67,9 +67,9 @@ pub fn nextProgressiveFieldToEnum(
     source: anytype,
     comptime E: type,
     pse: *util.ProgressiveStringToEnum(E),
-) (@TypeOf(source.*).PeekError || @TypeOf(source.*).NextError)!bool {
+) (@TypeOf(source.*).PeekError || @TypeOf(source.*).NextError || error{UnexpectedToken})!bool {
     switch (try source.peekNextTokenType()) {
-        else => unreachable,
+        else => return error.UnexpectedToken,
         .object_end => {
             assert(try source.next() == .object_end);
             return false;
