@@ -1,47 +1,17 @@
+//! OpenAPI Specification Version 3.1.0
 const std = @import("std");
 const assert = std.debug.assert;
 const util = @import("util");
 
 const Schema = @This();
-/// string
-/// REQUIRED.
-/// This string MUST be the version number of the OpenAPI Specification that the OpenAPI document uses.
-/// The openapi field SHOULD be used by tooling to interpret the OpenAPI document.
-/// This is not related to the API info.version string.
 openapi: []const u8,
-/// Info Object
-/// REQUIRED.
-/// Provides metadata about the API.
-/// The metadata MAY be used by tooling as required.
 info: Info,
-/// string
-/// The default value for the $schema keyword within Schema Objects contained within this OAS document.
-/// This MUST be in the form of a URI.
-///
-/// real name: 'jsonSchemaDialect'
 json_schema_dialect: ?[]const u8,
-
-/// [Server Object]
-/// An array of Server Objects, which provide connectivity information to a target server.
-/// If the servers property is not provided, or is an empty array, the default value would be
-/// a Server Object with a url value of /.
 servers: ?[]const Server,
-
-// /// Paths Object
-// /// The available paths and operations for the API.
-// paths: Paths,
-
-// /// Map[string, Path Item Object | Reference Object] ]
-// ///  The incoming webhooks that MAY be received as part of this API and that the API consumer MAY choose to implement. Closely related to the callbacks feature, this section describes requests initiated other than by an API call, for example by an out of band registration. The key name is a unique string to refer to each webhook, while the (optionally referenced) Path Item Object describes a request that may be initiated by the API provider and the expected responses. An example is available.
-// webhooks,
-
-// /// Components Object
-// ///  An element to hold various schemas for the document.
-// components,
-
-// /// [Security Requirement Object]
-// ///  A declaration of which security mechanisms can be used across the API. The list of values includes alternative security requirement objects that can be used. Only one of the security requirement objects need to be satisfied to authorize a request. Individual operations can override this definition. To make security optional, an empty security requirement ({}) can be included in the array.
-// security,
+paths: ?Paths,
+// webhooks: ?Webhooks,
+// components: ?Components,
+// security: ?Security,
 
 // /// [Tag Object]
 // ///  A list of tags used by the document with additional metadata. The order of the tags can be used to reflect on their order by the parsing tools. Not all tags that are used by the Operation Object must be declared. The tags that are not declared MAY be organized randomly or based on the tools’ logic. Each tag name in the list MUST be unique.
@@ -57,13 +27,9 @@ const empty = Schema{
     .info = Info.empty,
     .json_schema_dialect = null,
     .servers = null,
+    .paths = Paths.empty,
 };
-pub const json_required_fields = requiredFieldSet(Schema, .{
-    .openapi = true,
-    .info = true,
-    .json_schema_dialect = false,
-    .servers = false,
-});
+pub const json_required_fields = requiredFieldSetBasedOnOptionals(Schema, .{});
 pub const json_field_names = JsonStringifyFieldNameMap(Schema){
     .json_schema_dialect = "jsonSchemaDialect",
 };
@@ -93,76 +59,44 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    const helper = struct {
-        inline fn parseFieldValue(
-            comptime field_tag: std.meta.FieldEnum(Schema),
-            field_ptr: anytype,
-            is_new: bool,
-            ally: std.mem.Allocator,
-            src: @TypeOf(source),
-            json_opt: std.json.ParseOptions,
-        ) !void {
-            _ = is_new;
-            switch (field_tag) {
-                inline .openapi, .json_schema_dialect => {
-                    const str_ptr: *[]const u8 = switch (@TypeOf(field_ptr.*)) {
-                        []const u8 => field_ptr,
-                        ?[]const u8 => blk: {
-                            if (field_ptr.* == null) {
-                                field_ptr.* = "";
-                            }
-                            break :blk &field_ptr.*.?;
-                        },
-                        else => |T| @compileError("Unhandled string type: " ++ @typeName(T)),
-                    };
-                    var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(str_ptr.*));
-                    defer new_str.deinit();
-
-                    new_str.clearRetainingCapacity();
-                    str_ptr.* = "";
-
-                    assert(try src.allocNextIntoArrayListMax(
-                        &new_str,
-                        .alloc_always,
-                        json_opt.max_value_len orelse std.json.default_max_value_len,
-                    ) == null);
-                    str_ptr.* = try new_str.toOwnedSlice();
-                },
-                .info => try Info.jsonParseRealloc(field_ptr, ally, src, json_opt),
-                .servers => {
-                    var list = std.ArrayList(Server).fromOwnedSlice(ally, @constCast(field_ptr.* orelse &.{}));
-                    defer list.deinit();
-                    field_ptr.* = null;
-
-                    if (try src.next() != .array_begin) {
-                        return error.UnexpectedToken;
-                    }
-
-                    var overwritten_count: usize = 0;
-                    const overwritable_count = list.items.len;
-                    while (true) : (overwritten_count += 1) {
-                        switch (try src.peekNextTokenType()) {
-                            .array_end => {
-                                assert(try src.next() == .array_end);
-                                break;
-                            },
-                            else => {},
-                        }
-                        if (overwritten_count < overwritable_count) {
-                            try list.items[overwritten_count].jsonParseRealloc(ally, src, json_opt);
-                            overwritten_count += 1;
-                            continue;
-                        }
-                        try list.append(try Server.jsonParse(ally, src, json_opt));
-                    }
-
-                    field_ptr.* = try list.toOwnedSlice();
-                },
+    try jsonParseInPlaceTemplate(Schema, result, allocator, source, options, Schema.parseFieldValue);
+}
+inline fn parseFieldValue(
+    comptime field_tag: std.meta.FieldEnum(Schema),
+    field_ptr: anytype,
+    is_new: bool,
+    ally: std.mem.Allocator,
+    src: anytype,
+    json_opt: std.json.ParseOptions,
+) !void {
+    _ = is_new;
+    switch (field_tag) {
+        inline .openapi, .json_schema_dialect => {
+            var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+            defer str.deinit();
+            field_ptr.* = "";
+            try jsonParseReallocString(&str, src, json_opt);
+            field_ptr.* = try str.toOwnedSlice();
+        },
+        .info => try Info.jsonParseRealloc(field_ptr, ally, src, json_opt),
+        .servers => {
+            var list = std.ArrayListUnmanaged(Server).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
+            defer {
+                for (list.items) |*server|
+                    server.deinit(ally);
+                list.deinit(ally);
             }
-        }
-    };
-
-    try jsonParseInPlaceTemplate(Schema, result, allocator, source, options, helper.parseFieldValue);
+            field_ptr.* = null;
+            try jsonParseInPlaceArrayListTemplate(Server, &list, ally, src, json_opt);
+            field_ptr.* = try list.toOwnedSlice(ally);
+        },
+        .paths => {
+            if (field_ptr.* == null) {
+                field_ptr.* = Paths.empty;
+            }
+            try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+        },
+    }
 }
 
 test Schema {
@@ -205,32 +139,12 @@ test Schema {
 }
 
 pub const Info = struct {
-    /// REQUIRED.
-    /// The title of the API.
     title: []const u8,
-    /// string
-    /// A short summary of the API.
     summary: ?[]const u8,
-    /// string
-    /// A description of the API.
-    ///  CommonMark syntax MAY be used for rich text representation.
     description: ?[]const u8,
-    /// string
-    /// A URL to the Terms of Service for the API.
-    /// This MUST be in the form of a URL.
-    ///
-    /// real name: 'termsOfService'
     terms_of_service: ?[]const u8,
-    /// Contact Object
-    /// The contact information for the exposed API.
     contact: ?Contact,
-    /// License Object
-    /// The license information for the exposed API.
     license: ?License,
-    /// string
-    /// REQUIRED.
-    /// The version of the OpenAPI document (which is distinct from
-    /// the OpenAPI Specification version or the API implementation version).
     version: []const u8,
 
     /// this should always be safe to deinitialse
@@ -243,15 +157,7 @@ pub const Info = struct {
         .license = null,
         .version = "",
     };
-    pub const json_required_fields = requiredFieldSet(Info, .{
-        .title = true,
-        .summary = false,
-        .description = false,
-        .terms_of_service = false,
-        .contact = false,
-        .license = false,
-        .version = true,
-    });
+    pub const json_required_fields = requiredFieldSetBasedOnOptionals(Info, .{});
     pub const json_field_names = JsonStringifyFieldNameMap(Info){
         .terms_of_service = "termsOfService",
     };
@@ -279,76 +185,58 @@ pub const Info = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        const helper = struct {
-            inline fn parseFieldValue(
-                comptime field_tag: std.meta.FieldEnum(Info),
-                field_ptr: anytype,
-                is_new: bool,
-                ally: std.mem.Allocator,
-                src: @TypeOf(source),
-                json_opt: std.json.ParseOptions,
-            ) !void {
-                _ = is_new;
-                switch (field_tag) {
-                    .title,
-                    .summary,
-                    .description,
-                    .terms_of_service,
-                    .version,
-                    => {
-                        const str_ptr: *[]const u8 = switch (@TypeOf(field_ptr.*)) {
-                            []const u8 => field_ptr,
-                            ?[]const u8 => blk: {
-                                if (field_ptr.* == null) {
-                                    field_ptr.* = "";
-                                }
-                                break :blk &field_ptr.*.?;
-                            },
-                            else => |T| @compileError("Unhandled string type: " ++ @typeName(T)),
-                        };
-
-                        var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(str_ptr.*));
-                        defer new_str.deinit();
-
-                        new_str.clearRetainingCapacity();
-                        str_ptr.* = "";
-
-                        assert(try src.allocNextIntoArrayListMax(
-                            &new_str,
-                            .alloc_always,
-                            json_opt.max_value_len orelse std.json.default_max_value_len,
-                        ) == null);
-                        str_ptr.* = try new_str.toOwnedSlice();
-                    },
-                    .contact => {
-                        if (field_ptr.* == null) {
-                            field_ptr.* = Contact.empty;
-                        }
-                        const ptr = &field_ptr.*.?;
-                        try Contact.jsonParseRealloc(ptr, ally, src, json_opt);
-                    },
-                    .license => {
-                        if (field_ptr.* == null) {
-                            field_ptr.* = License.empty;
-                        }
-                        const ptr = &field_ptr.*.?;
-                        try License.jsonParseRealloc(ptr, ally, src, json_opt);
-                    },
+        try jsonParseInPlaceTemplate(Info, result, allocator, source, options, Info.parseFieldValue);
+    }
+    inline fn parseFieldValue(
+        comptime field_tag: std.meta.FieldEnum(Info),
+        field_ptr: anytype,
+        is_new: bool,
+        ally: std.mem.Allocator,
+        src: anytype,
+        json_opt: std.json.ParseOptions,
+    ) !void {
+        _ = is_new;
+        switch (field_tag) {
+            .title,
+            .summary,
+            .description,
+            .terms_of_service,
+            .version,
+            => {
+                var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+                defer str.deinit();
+                field_ptr.* = "";
+                try jsonParseReallocString(&str, src, json_opt);
+                field_ptr.* = try str.toOwnedSlice();
+            },
+            .contact => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = Contact.empty;
                 }
-            }
-        };
-
-        try jsonParseInPlaceTemplate(Info, result, allocator, source, options, helper.parseFieldValue);
+                const ptr = &field_ptr.*.?;
+                try Contact.jsonParseRealloc(ptr, ally, src, json_opt);
+            },
+            .license => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = License.empty;
+                }
+                const ptr = &field_ptr.*.?;
+                try License.jsonParseRealloc(ptr, ally, src, json_opt);
+            },
+        }
     }
     pub const Contact = struct {
         /// string
+        ///
         /// The identifying name of the contact person/organization.
         name: ?[]const u8,
         /// string
+        ///
         /// The URL pointing to the contact information.
         /// This MUST be in the form of a URL.
         url: ?[]const u8,
         /// string
+        ///
         /// The email address of the contact person/organization.
         /// This MUST be in the form of an email address.
         email: ?[]const u8,
@@ -359,11 +247,7 @@ pub const Info = struct {
             .email = null,
             .url = null,
         };
-        pub const json_required_fields = requiredFieldSet(Contact, .{
-            .name = false,
-            .url = false,
-            .email = false,
-        });
+        pub const json_required_fields = requiredFieldSetBasedOnOptionals(Contact, .{});
         pub const json_field_names = JsonStringifyFieldNameMap(Contact){};
         pub const jsonStringify = generateJsonStringifyStructWithoutNullsFn(Contact, Contact.json_field_names);
 
@@ -385,44 +269,38 @@ pub const Info = struct {
             source: anytype,
             options: std.json.ParseOptions,
         ) std.json.ParseError(@TypeOf(source.*))!void {
-            const helper = struct {
-                inline fn parseFieldValue(
-                    comptime field_tag: std.meta.FieldEnum(Contact),
-                    field_ptr: *std.meta.FieldType(Contact, field_tag),
-                    is_new: bool,
-                    ally: std.mem.Allocator,
-                    src: @TypeOf(source),
-                    json_opt: std.json.ParseOptions,
-                ) !void {
-                    _ = is_new;
-                    var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
-                    defer new_str.deinit();
-
-                    new_str.clearRetainingCapacity();
-                    field_ptr.* = "";
-
-                    assert(try src.allocNextIntoArrayListMax(
-                        &new_str,
-                        .alloc_always,
-                        json_opt.max_value_len orelse std.json.default_max_value_len,
-                    ) == null);
-                    field_ptr.* = try new_str.toOwnedSlice();
-                }
-            };
-
-            try jsonParseInPlaceTemplate(Contact, result, allocator, source, options, helper.parseFieldValue);
+            try jsonParseInPlaceTemplate(Contact, result, allocator, source, options, Contact.parseFieldValue);
+        }
+        inline fn parseFieldValue(
+            comptime field_tag: std.meta.FieldEnum(Contact),
+            field_ptr: *std.meta.FieldType(Contact, field_tag),
+            is_new: bool,
+            ally: std.mem.Allocator,
+            src: anytype,
+            json_opt: std.json.ParseOptions,
+        ) !void {
+            _ = is_new;
+            var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+            defer str.deinit();
+            field_ptr.* = "";
+            try jsonParseReallocString(&str, src, json_opt);
+            field_ptr.* = try str.toOwnedSlice();
         }
     };
     pub const License = struct {
         /// string
+        ///
         /// REQUIRED.
+        ///
         /// The license name used for the API.
         name: []const u8,
         /// string
+        ///
         /// An SPDX license expression for the API.
         /// The identifier field is mutually exclusive of the url field.
         identifier: ?[]const u8,
         /// string
+        ///
         /// A URL to the license used for the API.
         /// This MUST be in the form of a URL.
         /// The url field is mutually exclusive of the identifier field.
@@ -433,11 +311,7 @@ pub const Info = struct {
             .identifier = null,
             .url = null,
         };
-        pub const json_required_fields = requiredFieldSet(License, .{
-            .name = true,
-            .identifier = false,
-            .url = false,
-        });
+        pub const json_required_fields = requiredFieldSetBasedOnOptionals(License, .{});
         pub const json_field_names = JsonStringifyFieldNameMap(License){};
         pub const jsonStringify = generateJsonStringifyStructWithoutNullsFn(License, License.json_field_names);
 
@@ -459,47 +333,37 @@ pub const Info = struct {
             source: anytype,
             options: std.json.ParseOptions,
         ) std.json.ParseError(@TypeOf(source.*))!void {
-            const helper = struct {
-                inline fn parseFieldValue(
-                    comptime field_tag: std.meta.FieldEnum(License),
-                    field_ptr: *std.meta.FieldType(License, field_tag),
-                    is_new: bool,
-                    ally: std.mem.Allocator,
-                    src: @TypeOf(source),
-                    json_opt: std.json.ParseOptions,
-                ) !void {
-                    comptime assert( //
-                        @TypeOf(field_ptr.*) == []const u8 or
-                        @TypeOf(field_ptr.*) == ?[]const u8);
-                    _ = is_new;
-                    var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
-                    defer new_str.deinit();
-
-                    new_str.clearRetainingCapacity();
-                    field_ptr.* = "";
-
-                    assert(try src.allocNextIntoArrayListMax(
-                        &new_str,
-                        .alloc_always,
-                        json_opt.max_value_len orelse std.json.default_max_value_len,
-                    ) == null);
-                    field_ptr.* = try new_str.toOwnedSlice();
-                }
-            };
-
-            try jsonParseInPlaceTemplate(License, result, allocator, source, options, helper.parseFieldValue);
+            try jsonParseInPlaceTemplate(License, result, allocator, source, options, License.parseFieldValue);
+        }
+        inline fn parseFieldValue(
+            comptime field_tag: std.meta.FieldEnum(License),
+            field_ptr: *std.meta.FieldType(License, field_tag),
+            is_new: bool,
+            ally: std.mem.Allocator,
+            src: anytype,
+            json_opt: std.json.ParseOptions,
+        ) !void {
+            _ = is_new;
+            var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+            defer str.deinit();
+            field_ptr.* = @field(License.empty, @tagName(field_tag));
+            try jsonParseReallocString(&str, src, json_opt);
+            field_ptr.* = try str.toOwnedSlice();
         }
     };
 };
 
 pub const Server = struct {
     /// string
+    ///
     /// REQUIRED.
+    ///
     /// A URL to the target host. This URL supports Server Variables and MAY be relative,
     /// to indicate that the host location is relative to the location where the OpenAPI document is being served.
     /// Variable substitutions will be made when a variable is named in {brackets}.
     url: []const u8,
     /// string
+    ///
     /// An optional string describing the host designated by the URL.
     /// CommonMark syntax MAY be used for rich text representation.
     description: ?[]const u8,
@@ -513,11 +377,7 @@ pub const Server = struct {
         .description = null,
         .variables = null,
     };
-    pub const json_required_fields = requiredFieldSet(Server, .{
-        .url = true,
-        .description = false,
-        .variables = false,
-    });
+    pub const json_required_fields = requiredFieldSetBasedOnOptionals(Server, .{});
     pub const json_field_names = JsonStringifyFieldNameMap(Server){};
     pub fn jsonStringify(
         server: Server,
@@ -585,65 +445,48 @@ pub const Server = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        const helper = struct {
-            inline fn parseFieldValue(
-                comptime field_tag: std.meta.FieldEnum(Server),
-                field_ptr: *std.meta.FieldType(Server, field_tag),
-                is_new: bool,
-                ally: std.mem.Allocator,
-                src: @TypeOf(source),
-                json_opt: std.json.ParseOptions,
-            ) !void {
-                _ = is_new;
-                switch (field_tag) {
-                    .url, .description => {
-                        const str_ptr: *[]const u8 = switch (@TypeOf(field_ptr.*)) {
-                            []const u8 => field_ptr,
-                            ?[]const u8 => blk: {
-                                if (field_ptr.* == null) {
-                                    field_ptr.* = "";
-                                }
-                                break :blk &field_ptr.*.?;
-                            },
-                            else => |T| @compileError("Unhandled string type: " ++ @typeName(T)),
-                        };
-                        var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(str_ptr.*));
-                        defer new_str.deinit();
+        const helper = struct {};
+        _ = helper;
 
-                        new_str.clearRetainingCapacity();
-                        str_ptr.* = "";
-
-                        assert(try src.allocNextIntoArrayListMax(
-                            &new_str,
-                            .alloc_always,
-                            json_opt.max_value_len orelse std.json.default_max_value_len,
-                        ) == null);
-                        str_ptr.* = try new_str.toOwnedSlice();
-                    },
-                    .variables => {
-                        if (field_ptr.* == null) {
-                            field_ptr.* = .{};
-                        }
-                        const variables: *VariableMap = &field_ptr.*.?;
-                        for (variables.keys(), variables.values()) |key, *value| {
-                            ally.free(key);
-                            value.deinit(ally);
-                        }
-                        variables.clearRetainingCapacity();
-
-                        if (try src.next() != .array_begin) {
-                            return error.UnexpectedToken;
-                        }
-
-                        while (true) {}
-
-                        unreachable;
-                    },
+        try jsonParseInPlaceTemplate(Server, result, allocator, source, options, Server.parseFieldValue);
+    }
+    inline fn parseFieldValue(
+        comptime field_tag: std.meta.FieldEnum(Server),
+        field_ptr: *std.meta.FieldType(Server, field_tag),
+        is_new: bool,
+        ally: std.mem.Allocator,
+        src: anytype,
+        json_opt: std.json.ParseOptions,
+    ) !void {
+        _ = is_new;
+        switch (field_tag) {
+            .url, .description => {
+                var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+                defer str.deinit();
+                field_ptr.* = "";
+                try jsonParseReallocString(&str, src, json_opt);
+                field_ptr.* = try str.toOwnedSlice();
+            },
+            .variables => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = .{};
                 }
-            }
-        };
+                const variables: *VariableMap = &field_ptr.*.?;
+                for (variables.keys(), variables.values()) |key, *value| {
+                    ally.free(key);
+                    value.deinit(ally);
+                }
+                variables.clearRetainingCapacity();
 
-        try jsonParseInPlaceTemplate(Server, result, allocator, source, options, helper.parseFieldValue);
+                if (try src.next() != .array_begin) {
+                    return error.UnexpectedToken;
+                }
+
+                while (true) {}
+
+                unreachable;
+            },
+        }
     }
 
     pub const VariableMap = std.ArrayHashMapUnmanaged([]const u8, Variable, std.array_hash_map.StringContext, true);
@@ -655,7 +498,9 @@ pub const Server = struct {
         /// real name: 'enum'
         enumeration: ?Enum,
         /// string
+        ///
         /// REQUIRED.
+        ///
         /// The default value to use for substitution,
         /// which SHALL be sent if an alternate value is not supplied.
         /// Note this behavior is different than the Schema Object’s treatment of default values,
@@ -663,6 +508,7 @@ pub const Server = struct {
         /// If the enum is defined, the value MUST exist in the enum’s values.
         default: []const u8,
         /// string
+        ///
         /// An optional description for the server variable.
         /// CommonMark syntax MAY be used for rich text representation.
         description: ?[]const u8,
@@ -672,9 +518,7 @@ pub const Server = struct {
             .default = "",
             .description = null,
         };
-        pub const json_required_fields = requiredFieldSet(Variable, .{
-            .default = true,
-        });
+        pub const json_required_fields = requiredFieldSetBasedOnOptionals(Variable, .{});
         pub const json_field_names = .{
             .enumeration = "enum",
         };
@@ -713,25 +557,22 @@ pub const Server = struct {
             source: anytype,
             options: std.json.ParseOptions,
         ) std.json.ParseError(@TypeOf(source.*))!void {
-            const helper = struct {
-                inline fn parseFieldValue(
-                    comptime field_tag: std.meta.FieldEnum(Variable),
-                    field_ptr: *std.meta.FieldType(Variable, field_tag),
-                    is_new: bool,
-                    ally: std.mem.Allocator,
-                    src: @TypeOf(source),
-                    json_opt: std.json.ParseOptions,
-                ) !void {
-                    _ = field_ptr;
-                    _ = json_opt;
-                    _ = src;
-                    _ = ally;
-                    _ = is_new;
-                    unreachable;
-                }
-            };
-
-            try jsonParseInPlaceTemplate(Variable, result, allocator, source, options, helper.parseFieldValue);
+            try jsonParseInPlaceTemplate(Variable, result, allocator, source, options, Variable.parseFieldValue);
+        }
+        inline fn parseFieldValue(
+            comptime field_tag: std.meta.FieldEnum(Variable),
+            field_ptr: *std.meta.FieldType(Variable, field_tag),
+            is_new: bool,
+            ally: std.mem.Allocator,
+            src: anytype,
+            json_opt: std.json.ParseOptions,
+        ) !void {
+            _ = field_ptr;
+            _ = json_opt;
+            _ = src;
+            _ = ally;
+            _ = is_new;
+            unreachable;
         }
 
         pub const Enum = std.ArrayHashMapUnmanaged([]const u8, void, std.array_hash_map.StringContext, true);
@@ -766,6 +607,497 @@ pub const Server = struct {
             try options.whitespace.outputIndent(writer);
         }
         try writer.writeByte('}');
+    }
+};
+
+pub const Paths = struct {
+    fields: Fields,
+
+    pub const empty = Paths{
+        .fields = .{},
+    };
+
+    pub fn deinit(paths: *Paths, allocator: std.mem.Allocator) void {
+        for (paths.fields.keys(), paths.fields.values()) |path, *item| {
+            allocator.free(path);
+            item.deinit(allocator);
+        }
+        paths.fields.deinit(allocator);
+    }
+
+    pub fn jsonStringify(
+        paths: Paths,
+        options: std.json.StringifyOptions,
+        writer: anytype,
+    ) !void {
+        _ = writer;
+        _ = options;
+        _ = paths;
+        @panic("TODO");
+    }
+
+    pub fn jsonParseRealloc(
+        result: *Paths,
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!void {
+        if (try source.next() != .object_begin) return error.UnexpectedToken;
+
+        var old_fields = result.fields.move();
+        defer {
+            for (old_fields.keys(), old_fields.values()) |path, *item| {
+                allocator.free(path);
+                item.deinit(allocator);
+            }
+            old_fields.deinit(allocator);
+        }
+
+        var new_fields = Fields{};
+        defer {
+            for (new_fields.keys(), new_fields.values()) |path, *item| {
+                allocator.free(path);
+                item.deinit(allocator);
+            }
+            new_fields.deinit(allocator);
+        }
+        try new_fields.ensureUnusedCapacity(allocator, old_fields.count());
+
+        var path_buffer = std.ArrayList(u8).init(allocator);
+        defer path_buffer.deinit();
+
+        while (true) {
+            switch (try source.peekNextTokenType()) {
+                else => unreachable,
+                .object_end => {
+                    _ = try source.next();
+                    break;
+                },
+                .string => {},
+            }
+
+            path_buffer.clearRetainingCapacity();
+            const new_path: []const u8 = (try source.allocNextIntoArrayListMax(
+                &path_buffer,
+                .alloc_if_needed,
+                options.max_value_len orelse std.json.default_max_value_len,
+            )) orelse path_buffer.items;
+
+            const gop = try new_fields.getOrPut(allocator, new_path);
+            if (gop.found_existing) switch (options.duplicate_field_behavior) {
+                .@"error" => return error.DuplicateField,
+                .use_first => {
+                    try source.skipValue();
+                    continue;
+                },
+                .use_last => {
+                    try gop.value_ptr.jsonParseRealloc(allocator, source, options);
+                    continue;
+                },
+            };
+
+            gop.key_ptr.* = "";
+            if (old_fields.fetchSwapRemove(new_path)) |old| {
+                gop.key_ptr.* = old.key;
+                gop.value_ptr.* = old.value;
+            } else {
+                gop.key_ptr.* = try allocator.dupe(u8, new_path);
+                gop.value_ptr.* = Item.empty;
+            }
+            assert(gop.key_ptr.len != 0);
+
+            try gop.value_ptr.jsonParseRealloc(allocator, source, options);
+        }
+        result.fields = new_fields;
+    }
+
+    pub const Fields = std.ArrayHashMapUnmanaged([]const u8, Item, std.array_hash_map.StringContext, true);
+    pub const Item = struct {
+        ref: ?[]const u8,
+        summary: ?[]const u8,
+        description: ?[]const u8,
+
+        get: ?Operation,
+        put: ?Operation,
+        post: ?Operation,
+        delete: ?Operation,
+        options: ?Operation,
+        head: ?Operation,
+        patch: ?Operation,
+        trace: ?Operation,
+
+        servers: ?[]const Server,
+
+        // /// [Parameter Object | Reference Object]
+        // ///
+        // /// A list of parameters that are applicable for all the operations described under this path.
+        // /// These parameters can be overridden at the operation level, but cannot be removed there.
+        // /// The list MUST NOT include duplicated parameters. A unique parameter is defined by a combination of a name and location.
+        // /// The list can use the Reference Object to link to parameters that are defined at the OpenAPI Object’s components/parameters.
+        parameters: ?[]const Param,
+
+        pub const empty = Item{
+            .ref = null,
+            .summary = null,
+            .description = null,
+
+            .get = null,
+            .put = null,
+            .post = null,
+            .delete = null,
+            .options = null,
+            .head = null,
+            .patch = null,
+            .trace = null,
+
+            .servers = null,
+            .parameters = null,
+        };
+        pub const json_required_fields = requiredFieldSetBasedOnOptionals(Item, .{});
+        pub const json_field_names = JsonStringifyFieldNameMap(Item){
+            .ref = "$ref",
+        };
+
+        pub fn deinit(item: *Item, allocator: std.mem.Allocator) void {
+            allocator.free(item.ref orelse "");
+            allocator.free(item.summary orelse "");
+            allocator.free(item.description orelse "");
+
+            inline for (.{ "get", "put", "post", "delete", "options", "head", "patch", "trace" }) |method_name| {
+                if (@field(item, method_name)) |*operation| {
+                    Operation.deinit(operation, allocator);
+                }
+            }
+
+            if (item.servers) |servers| {
+                for (@constCast(servers)) |*server| {
+                    server.deinit(allocator);
+                }
+                allocator.free(servers);
+            }
+            if (item.parameters) |parameters| {
+                for (@constCast(parameters)) |*parameter| {
+                    parameter.deinit(allocator);
+                }
+                allocator.free(parameters);
+            }
+        }
+
+        pub fn jsonParseRealloc(
+            result: *Item,
+            allocator: std.mem.Allocator,
+            source: anytype,
+            options: std.json.ParseOptions,
+        ) std.json.ParseError(@TypeOf(source.*))!void {
+            try jsonParseInPlaceTemplate(Item, result, allocator, source, options, Item.parseFieldValue);
+        }
+
+        inline fn parseFieldValue(
+            comptime field_tag: std.meta.FieldEnum(Item),
+            field_ptr: *std.meta.FieldType(Item, field_tag),
+            is_new: bool,
+            ally: std.mem.Allocator,
+            src: anytype,
+            json_opt: std.json.ParseOptions,
+        ) !void {
+            _ = is_new;
+            switch (field_tag) {
+                .ref, .summary, .description => {
+                    var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
+                    defer str.deinit();
+                    field_ptr.* = null;
+                    try jsonParseReallocString(&str, src, json_opt);
+                    field_ptr.* = try str.toOwnedSlice();
+                },
+
+                .get,
+                .put,
+                .post,
+                .delete,
+                .options,
+                .head,
+                .patch,
+                .trace,
+                => {
+                    if (field_ptr.* == null) {
+                        field_ptr.* = Operation.empty;
+                    }
+                    try Operation.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+                },
+
+                .servers, .parameters => {
+                    const FieldElem = @typeInfo(@TypeOf(field_ptr.*.?)).Pointer.child;
+                    var list = std.ArrayListUnmanaged(FieldElem).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
+                    defer {
+                        for (list.items) |*server|
+                            server.deinit(ally);
+                        list.deinit(ally);
+                    }
+                    field_ptr.* = null;
+                    try jsonParseInPlaceArrayListTemplate(FieldElem, &list, ally, src, json_opt);
+                    field_ptr.* = try list.toOwnedSlice(ally);
+                },
+            }
+        }
+
+        pub const Param = union(enum) {
+            parameter: Parameter,
+            reference: Reference,
+
+            pub fn deinit(param: *Param, allocator: std.mem.Allocator) void {
+                switch (param.*) {
+                    inline else => |*ptr| ptr.deinit(allocator),
+                }
+            }
+
+            pub fn jsonParse(
+                allocator: std.mem.Allocator,
+                source: anytype,
+                options: std.json.ParseOptions,
+            ) !Param {
+                var result: Param = .{ .reference = Reference.empty };
+                errdefer result.deinit(allocator);
+                try result.jsonParseRealloc(allocator, source, options);
+                return result;
+            }
+
+            pub fn jsonParseRealloc(
+                result: *Param,
+                allocator: std.mem.Allocator,
+                source: anytype,
+                options: std.json.ParseOptions,
+            ) std.json.ParseError(@TypeOf(source.*))!void {
+                _ = options;
+                _ = allocator;
+                _ = result;
+                @panic("TODO");
+            }
+        };
+
+        pub const Operation = struct {
+            tags: ?[]const []const u8,
+            summary: ?[]const u8,
+            description: ?[]const u8,
+            // externalDocs   External Documentation Object                     Additional external documentation for this operation.
+            // operationId    string                                            Unique string used to identify the operation. The id MUST be unique among all operations described in the API. The operationId value is case-sensitive. Tools and libraries MAY use the operationId to uniquely identify an operation, therefore, it is RECOMMENDED to follow common programming naming conventions.
+            // parameters     [Parameter Object | Reference Object]             A list of parameters that are applicable for this operation. If a parameter is already defined at the Path Item, the new definition will override it but can never remove it. The list MUST NOT include duplicated parameters. A unique parameter is defined by a combination of a name and location. The list can use the Reference Object to link to parameters that are defined at the OpenAPI Object’s components/parameters.
+            // requestBody    Request Body Object | Reference Object            The request body applicable for this operation. The requestBody is fully supported in HTTP methods where the HTTP 1.1 specification [RFC7231] has explicitly defined semantics for request bodies. In other cases where the HTTP spec is vague (such as GET, HEAD and DELETE), requestBody is permitted but does not have well-defined semantics and SHOULD be avoided if possible.
+            // responses      Responses Object                                  The list of possible responses as they are returned from executing this operation.
+            // callbacks      Map[string, Callback Object | Reference Object]   A map of possible out-of band callbacks related to the parent operation. The key is a unique identifier for the Callback Object. Each value in the map is a Callback Object that describes a request that may be initiated by the API provider and the expected responses.
+            // deprecated     boolean                                           Declares this operation to be deprecated. Consumers SHOULD refrain from usage of the declared operation. Default value is false.
+            // security       [Security Requirement Object]                     A declaration of which security mechanisms can be used for this operation. The list of values includes alternative security requirement objects that can be used. Only one of the security requirement objects need to be satisfied to authorize a request. To make security optional, an empty security requirement ({}) can be included in the array. This definition overrides any declared top-level security. To remove a top-level security declaration, an empty array can be used.
+            // servers        [Server Object]                                   An alternative server array to service this operation. If an alternative server object is specified at the Path Item Object or Root level, it will be overridden by this value.
+
+            pub const empty = Operation{
+                .tags = null,
+                .summary = null,
+                .description = null,
+            };
+            pub const json_required_fields = requiredFieldSetBasedOnOptionals(Operation, .{});
+            pub const json_field_names = JsonStringifyFieldNameMap(Operation){};
+
+            pub fn deinit(op: *Operation, allocator: std.mem.Allocator) void {
+                if (op.tags) |tags| {
+                    for (tags) |tag| allocator.free(tag);
+                    allocator.free(tags);
+                }
+                allocator.free(op.summary orelse "");
+                allocator.free(op.description orelse "");
+            }
+
+            pub fn jsonParseRealloc(
+                result: *Operation,
+                allocator: std.mem.Allocator,
+                source: anytype,
+                options: std.json.ParseOptions,
+            ) std.json.ParseError(@TypeOf(source.*))!void {
+                try jsonParseInPlaceTemplate(Operation, result, allocator, source, options, Operation.parseFieldValue);
+            }
+
+            inline fn parseFieldValue(
+                comptime field_tag: std.meta.FieldEnum(Operation),
+                field_ptr: *std.meta.FieldType(Operation, field_tag),
+                is_new: bool,
+                ally: std.mem.Allocator,
+                src: anytype,
+                json_opt: std.json.ParseOptions,
+            ) !void {
+                _ = is_new;
+                switch (field_tag) {
+                    .tags => {
+                        var list = std.ArrayList([]const u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse &.{}));
+                        defer {
+                            for (list.items) |str| ally.free(str);
+                            list.deinit();
+                        }
+
+                        field_ptr.* = null;
+
+                        var overwritten_count: usize = 0;
+                        const overwritable_count = list.items.len;
+
+                        if (try src.next() != .array_begin) {
+                            return error.UnexpectedToken;
+                        }
+                        while (true) {
+                            switch (try src.peekNextTokenType()) {
+                                else => return error.UnexpectedToken,
+                                .array_end => {
+                                    _ = try src.next();
+                                    break;
+                                },
+                                .string => {},
+                            }
+                            if (overwritten_count < overwritable_count) {
+                                defer overwritten_count += 1;
+                                var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(list.items[overwritten_count]));
+                                defer new_str.deinit();
+                                list.items[overwritten_count] = "";
+                                try jsonParseReallocString(&new_str, src, json_opt);
+                                list.items[overwritten_count] = try new_str.toOwnedSlice();
+                                continue;
+                            }
+                            const new_str = try src.nextAllocMax(
+                                ally,
+                                .alloc_always,
+                                json_opt.max_value_len orelse std.json.default_max_value_len,
+                            );
+                            try list.append(new_str.allocated_string);
+                        }
+
+                        field_ptr.* = try list.toOwnedSlice();
+                    },
+                    .summary, .description => {
+                        var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
+                        defer str.deinit();
+                        field_ptr.* = null;
+                        try jsonParseReallocString(&str, src, json_opt);
+                        field_ptr.* = try str.toOwnedSlice();
+                    },
+                }
+            }
+        };
+    };
+};
+
+pub const Parameter = struct {
+    name: []const u8,
+    in: In,
+    description: ?[]const u8,
+    required: ?bool,
+    deprecated: ?bool,
+    allow_empty_value: ?bool,
+
+    pub const empty = Parameter{
+        .name = "",
+        .in = undefined,
+        .description = null,
+        .required = null,
+        .deprecated = null,
+        .allow_empty_value = null,
+    };
+    pub const json_required_fields = requiredFieldSetBasedOnOptionals(Parameter, .{});
+    pub const json_field_names = JsonStringifyFieldNameMap(Parameter){
+        .allow_empty_value = "allowEmptyValue",
+    };
+
+    pub fn deinit(param: Parameter, allocator: std.mem.Allocator) void {
+        allocator.free(param.name);
+        allocator.free(param.description orelse "");
+    }
+
+    pub fn jsonParseRealloc(
+        result: *Parameter,
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!void {
+        try jsonParseInPlaceTemplate(Parameter, result, allocator, source, options);
+    }
+    inline fn parseFieldValue(
+        comptime field_tag: std.meta.FieldEnum(Schema),
+        field_ptr: anytype,
+        is_new: bool,
+        ally: std.mem.Allocator,
+        src: anytype,
+        json_opt: std.json.ParseOptions,
+    ) !void {
+        _ = is_new;
+        switch (field_tag) {
+            .name, .description => {
+                var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+                defer new_str.deinit();
+                field_ptr.* = "";
+                try jsonParseReallocString(&new_str, src, json_opt);
+                field_ptr.* = try new_str.toOwnedSlice();
+            },
+            .in => {
+                var pse = util.ProgressiveStringToEnum(Parameter.In){};
+                try util.json.nextProgressiveStringToEnum(src, Parameter.In, &pse);
+                field_ptr.* = pse.getMatch() orelse return error.UnexpectedToken;
+            },
+            .required, .deprecated, .allow_empty_value => {
+                field_ptr.* = switch (try src.next()) {
+                    .true => true,
+                    .false => false,
+                    else => return error.UnexpectedToken,
+                };
+            },
+        }
+    }
+
+    pub const In = enum {
+        query,
+        header,
+        path,
+        cookie,
+    };
+};
+
+pub const Reference = struct {
+    ref: []const u8,
+    summary: ?[]const u8,
+    description: ?[]const u8,
+
+    pub const empty = Reference{
+        .ref = "",
+        .summary = null,
+        .description = null,
+    };
+    pub const json_required_fields = requiredFieldSetBasedOnOptionals(Reference, .{});
+    pub const json_field_names = JsonStringifyFieldNameMap(Reference){
+        .ref = "$ref",
+    };
+
+    pub fn deinit(ref: Reference, allocator: std.mem.Allocator) void {
+        allocator.free(ref.ref);
+        allocator.free(ref.summary orelse "");
+        allocator.free(ref.description orelse "");
+    }
+
+    pub fn jsonParseRealloc(
+        result: *Reference,
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!void {
+        try jsonParseInPlaceTemplate(Reference, result, allocator, source, options, Reference.parseFieldValue);
+    }
+    inline fn parseFieldValue(
+        comptime field_tag: std.meta.FieldEnum(Reference),
+        field_ptr: anytype,
+        is_new: bool,
+        ally: std.mem.Allocator,
+        src: anytype,
+        json_opt: std.json.ParseOptions,
+    ) !void {
+        _ = is_new;
+        _ = field_tag;
+        var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
+        defer new_str.deinit();
+        field_ptr.* = "";
+        try jsonParseReallocString(&new_str, src, json_opt);
+        field_ptr.* = try new_str.toOwnedSlice();
     }
 };
 
@@ -815,15 +1147,27 @@ fn JsonStringifyFieldNameMapReverse(
 fn FieldEnumSet(comptime T: type) type {
     return std.EnumSet(std.meta.FieldEnum(T));
 }
-inline fn requiredFieldSet(
+inline fn requiredFieldSetBasedOnOptionals(
+    comptime T: type,
+    values: std.enums.EnumFieldStruct(std.meta.FieldEnum(T), ?bool, @as(?bool, null)),
+) FieldEnumSet(T) {
+    var result = FieldEnumSet(T).initEmpty();
+    inline for (@typeInfo(T).Struct.fields) |field| {
+        const is_required = @field(values, field.name) orelse @typeInfo(field.type) != .Optional;
+        const tag = @field(std.meta.FieldEnum(T), field.name);
+        result.setPresent(tag, is_required);
+    }
+    return result;
+}
+fn requiredFieldSet(
     comptime T: type,
     values: std.enums.EnumFieldStruct(std.meta.FieldEnum(T), bool, null),
 ) FieldEnumSet(T) {
     var result = FieldEnumSet(T).initEmpty();
     inline for (@typeInfo(T).Struct.fields) |field| {
-        if (@field(values, field.name)) {
-            result.insert(@field(std.meta.FieldEnum(T), field.name));
-        }
+        const is_required = @field(values, field.name);
+        const tag = @field(std.meta.FieldEnum(T), field.name);
+        result.setPresent(tag, is_required);
     }
     return result;
 }
@@ -880,6 +1224,57 @@ fn GenerateJsonStringifyStructWithoutNullsFnImpl(
     };
 }
 
+fn jsonParseReallocString(
+    str: *std.ArrayList(u8),
+    source: anytype,
+    options: std.json.ParseOptions,
+) !void {
+    str.clearRetainingCapacity();
+    assert(try source.allocNextIntoArrayListMax(
+        str,
+        .alloc_always,
+        options.max_value_len orelse std.json.default_max_value_len,
+    ) == null);
+}
+
+/// parses the tokens from `source` into `results`,
+/// re-using the memory of any elements already present in `results`.
+/// `results` may be modified on error - caller must ensure that each `T`
+/// is deinitialised properly regardless.
+fn jsonParseInPlaceArrayListTemplate(
+    comptime T: type,
+    results: *std.ArrayListUnmanaged(T),
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
+) !void {
+    if (try source.next() != .array_begin) {
+        return error.UnexpectedToken;
+    }
+
+    var overwritten_count: usize = 0;
+    const overwritable_count = results.items.len;
+    while (true) : (overwritten_count += 1) {
+        switch (try source.peekNextTokenType()) {
+            .array_end => {
+                assert(try source.next() == .array_end);
+                break;
+            },
+            else => {},
+        }
+        if (overwritten_count < overwritable_count) {
+            try results.items[overwritten_count].jsonParseRealloc(allocator, source, options);
+            overwritten_count += 1;
+            continue;
+        }
+        try results.append(allocator, try T.jsonParse(allocator, source, options));
+    }
+
+    if (overwritten_count < overwritable_count) {
+        results.shrinkRetainingCapacity(overwritten_count);
+    }
+}
+
 fn jsonParseInPlaceTemplate(
     comptime T: type,
     result: *T,
@@ -897,7 +1292,7 @@ fn jsonParseInPlaceTemplate(
     ///     options: std.json.ParseOptions,
     /// ) std.json.ParseError(@TypeOf(source.*))!void
     /// ```
-    comptime parseFieldValue: anytype,
+    comptime parseFieldValueFn: anytype,
 ) std.json.ParseError(@TypeOf(source.*))!void {
     const json_field_name_map: JsonStringifyFieldNameMap(T) = T.json_field_names;
     const json_field_name_map_reverse: JsonStringifyFieldNameMapReverse(T, json_field_name_map) = .{};
@@ -937,7 +1332,7 @@ fn jsonParseInPlaceTemplate(
         } else true;
         field_set.insert(field_name);
         switch (field_name) {
-            inline else => |tag| try parseFieldValue(
+            inline else => |tag| try parseFieldValueFn(
                 tag,
                 &@field(result, @tagName(tag)),
                 is_new,
@@ -950,5 +1345,16 @@ fn jsonParseInPlaceTemplate(
 
     if (!required_fields.subsetOf(field_set)) {
         return error.MissingField;
+    }
+
+    // ensure that any fields that were present in the old `result` value are
+    // not present in the resulting `result` value if they are not present.
+    var to_free = T.empty;
+    defer to_free.deinit(allocator);
+    inline for (@typeInfo(T).Struct.fields) |field| cont: {
+        const tag = @field(FieldName, field.name);
+        if (field_set.contains(tag)) break :cont;
+        const Field = std.meta.FieldType(T, tag);
+        std.mem.swap(Field, &@field(result, field.name), &@field(to_free, field.name));
     }
 }
