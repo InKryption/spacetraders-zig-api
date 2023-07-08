@@ -275,3 +275,27 @@ test ProgressiveStringToEnum {
     try testProgressiveStringToEnum(enum { adlk, bnae, aaeg, cvxz, fadsfea, vafa, zvcxer, ep, afeap, lapqqokf });
     try testProgressiveStringToEnum(enum { a, ab, abcd, bcdefg, bcde, xy, xz, xyz, xyzzz });
 }
+
+pub fn defaultValue(
+    comptime T: type,
+    comptime field_name: []const u8,
+) ?@typeInfo(T).Struct.fields[std.meta.fieldIndex(T, field_name).?].type {
+    const field_index = std.meta.fieldIndex(T, field_name).?;
+    const field_info = @typeInfo(T).Struct.fields[field_index];
+    const ptr = field_info.default_value orelse return null;
+    const Dummy = @Type(.{ .Struct = .{
+        .layout = .Auto,
+        .backing_integer = null,
+        .is_tuple = false,
+        .decls = &.{},
+        .fields = &[_]std.builtin.Type.StructField{.{
+            .name = "value",
+            .type = field_info.type,
+            .default_value = ptr,
+            .is_comptime = true,
+            .alignment = 0,
+        }},
+    } });
+    const dummy = Dummy{};
+    return dummy.value;
+}

@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const util = @import("util");
 
 const schema_tools = @import("schema-tools.zig");
 
@@ -123,7 +124,7 @@ pub const Item = struct {
     parameters: ?[]const Param = null,
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Item, .{});
-    pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Item){
+    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Item){
         .ref = "$ref",
     };
 
@@ -219,6 +220,16 @@ pub const Item = struct {
             }
         }
 
+        pub fn jsonStringify(
+            param: Param,
+            options: std.json.StringifyOptions,
+            writer: anytype,
+        ) @TypeOf(writer).Error!void {
+            try switch (param) {
+                inline else => |val| val.jsonStringify(options, writer),
+            };
+        }
+
         pub fn jsonParse(
             allocator: std.mem.Allocator,
             source: anytype,
@@ -236,11 +247,75 @@ pub const Item = struct {
             source: anytype,
             options: std.json.ParseOptions,
         ) std.json.ParseError(@TypeOf(source.*))!void {
-            _ = options;
             _ = allocator;
             _ = result;
-            @panic("TODO");
+
+            var resolution: ?@typeInfo(Param).Union.tag_type.? = null;
+            _ = resolution;
+
+            var pse: util.ProgressiveStringToEnum(AnyFieldTag) = .{};
+            while (try util.json.nextProgressiveFieldToEnum(source, AnyFieldTag, &pse)) : (pse = .{}) {
+                const json_field_match: AnyFieldTag = pse.getMatch() orelse {
+                    if (options.ignore_unknown_fields) continue;
+                    return error.UnknownField;
+                };
+
+                if (!json_field_match.exclusiveTo(null)) {}
+            }
         }
+
+        const AnyFieldTag = enum {
+            // exclusive to `Parameter`
+            name,
+            in,
+            required,
+            deprecated,
+            allowEmptyValue,
+
+            // exclusive to `Reference`
+            ref,
+            summary,
+            description,
+
+            // shared
+            description,
+
+            inline fn exclusiveTo(
+                tag: AnyFieldTag,
+                /// pass null to check if it's exclusive to either, such that
+                /// false means it's shared, and true means it is exclusive
+                maybe_which: ?@typeInfo(Param).Union.tag_type,
+            ) bool {
+                const ParameterJson = @TypeOf(Parameter.json_field_names);
+                const ReferenceJson = @TypeOf(Reference.json_field_names);
+                switch (tag) {
+                    inline else => |itag| {
+                        const field_name = @tagName(itag);
+                        if (maybe_which) |which| switch (which) {
+                            .parameter => {
+                                if (!@hasField(ParameterJson, field_name)) return false;
+                            },
+                            .reference => {
+                                if (!@hasField(ReferenceJson, field_name)) return false;
+                            },
+                        } else if (@hasField(ParameterJson, field_name) and @hasField(ReferenceJson, field_name)) {
+                            return false;
+                        }
+                    },
+                }
+                return true;
+            }
+
+            comptime {
+                const parameter_fields = @typeInfo(@TypeOf(Parameter.json_field_names)).Struct.fields;
+                const reference_fields = @typeInfo(@TypeOf(Reference.json_field_names)).Struct.fields;
+
+                for (parameter_fields ++ reference_fields) |field| {
+                    if (@hasField(AnyFieldTag, field.name)) continue;
+                    @compileError("Missing field '" ++ field.name ++ "'");
+                }
+            }
+        };
     };
 
     pub const Operation = struct {
@@ -258,7 +333,7 @@ pub const Item = struct {
         // servers        [Server Object]                                   An alternative server array to service this operation. If an alternative server object is specified at the Path Item Object or Root level, it will be overridden by this value.
 
         pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Operation, .{});
-        pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Operation){};
+        pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Operation){};
 
         pub fn deinit(op: *Operation, allocator: std.mem.Allocator) void {
             if (op.tags) |tags| {

@@ -13,7 +13,7 @@ license: ?License = null,
 version: []const u8 = "",
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Info, .{});
-pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Info){
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Info){
     .terms_of_service = "termsOfService",
 };
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(Info, Info.json_field_names);
@@ -86,7 +86,7 @@ pub const Contact = struct {
     email: ?[]const u8 = null,
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Contact, .{});
-    pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Contact){};
+    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Contact){};
     pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(Contact, Contact.json_field_names);
 
     pub fn deinit(contact: Contact, allocator: std.mem.Allocator) void {
@@ -131,7 +131,7 @@ pub const License = struct {
     url: ?[]const u8 = null,
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(License, .{});
-    pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(License){};
+    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(License){};
     pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(License, License.json_field_names);
 
     pub fn deinit(license: License, allocator: std.mem.Allocator) void {

@@ -27,7 +27,7 @@ paths: ?Paths = null,
 // externalDocs,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Schema, .{});
-pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Schema){
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Schema){
     .json_schema_dialect = "jsonSchemaDialect",
 };
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(Schema, Schema.json_field_names);

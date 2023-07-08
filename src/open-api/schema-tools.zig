@@ -32,13 +32,13 @@ pub fn requiredFieldSet(
 
 pub fn generateJsonStringifyStructWithoutNullsFn(
     comptime T: type,
-    comptime field_names: JsonStringifyFieldNameMap(T),
+    comptime field_names: ZigToJsonFieldNameMap(T),
 ) @TypeOf(GenerateJsonStringifyStructWithoutNullsFnImpl(T, field_names).stringify) {
     return GenerateJsonStringifyStructWithoutNullsFnImpl(T, field_names).stringify;
 }
 fn GenerateJsonStringifyStructWithoutNullsFnImpl(
     comptime T: type,
-    comptime field_names: JsonStringifyFieldNameMap(T),
+    comptime field_names: ZigToJsonFieldNameMap(T),
 ) type {
     return struct {
         pub fn stringify(
@@ -152,8 +152,8 @@ pub fn jsonParseInPlaceTemplate(
     /// ```
     comptime parseFieldValueFn: anytype,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    const json_field_name_map: JsonStringifyFieldNameMap(T) = T.json_field_names;
-    const json_field_name_map_reverse: JsonStringifyFieldNameMapReverse(T, json_field_name_map) = .{};
+    const json_field_name_map: ZigToJsonFieldNameMap(T) = T.json_field_names;
+    const json_field_name_map_reverse: JsonToZigFieldNameMap(T, json_field_name_map) = .{};
 
     const JsonFieldName = std.meta.FieldEnum(@TypeOf(json_field_name_map_reverse));
     const FieldName = std.meta.FieldEnum(T);
@@ -217,7 +217,7 @@ pub fn jsonParseInPlaceTemplate(
     }
 }
 
-pub fn JsonStringifyFieldNameMap(comptime T: type) type {
+pub fn ZigToJsonFieldNameMap(comptime T: type) type {
     const info = @typeInfo(T).Struct;
     var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
     for (&fields, info.fields) |*field, ref| {
@@ -238,9 +238,9 @@ pub fn JsonStringifyFieldNameMap(comptime T: type) type {
     } });
 }
 
-pub fn JsonStringifyFieldNameMapReverse(
+pub fn JsonToZigFieldNameMap(
     comptime T: type,
-    comptime map: JsonStringifyFieldNameMap(T),
+    comptime map: ZigToJsonFieldNameMap(T),
 ) type {
     const info = @typeInfo(@TypeOf(map)).Struct;
     var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;

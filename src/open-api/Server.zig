@@ -8,7 +8,7 @@ description: ?[]const u8 = null,
 variables: ?VariableMap = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Server, .{});
-pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Server){};
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
 pub fn jsonStringify(
     server: Server,
     options: std.json.StringifyOptions,
