@@ -24,10 +24,30 @@ pub fn jsonStringify(
     options: std.json.StringifyOptions,
     writer: anytype,
 ) !void {
-    _ = writer;
-    _ = options;
-    _ = paths;
-    @panic("TODO");
+    try writer.writeByte('{');
+    var field_output = false;
+    var child_options = options;
+    child_options.whitespace.indent_level += 1;
+
+    var iter = paths.fields.iterator();
+    while (iter.next()) |entry| {
+        if (field_output) {
+            try writer.writeByte(',');
+        } else field_output = true;
+
+        try child_options.whitespace.outputIndent(writer);
+
+        try std.json.stringify(entry.key_ptr.*, options, writer);
+        try writer.writeByte(':');
+        if (child_options.whitespace.separator) {
+            try writer.writeByte(' ');
+        }
+        try std.json.stringify(entry.value_ptr.*, child_options, writer);
+    }
+    if (field_output) {
+        try options.whitespace.outputIndent(writer);
+    }
+    try writer.writeByte('}');
 }
 
 pub fn jsonParseRealloc(
@@ -78,31 +98,29 @@ pub fn jsonParseRealloc(
         )) orelse path_buffer.items;
 
         const gop = try new_fields.getOrPut(allocator, new_path);
-        if (gop.found_existing) switch (options.duplicate_field_behavior) {
-            .@"error" => return error.DuplicateField,
-            .use_first => {
-                try source.skipValue();
-                continue;
-            },
-            .use_last => {
-                try gop.value_ptr.jsonParseRealloc(allocator, source, options);
-                continue;
-            },
-        };
+        gop.key_ptr.* = undefined;
 
-        gop.key_ptr.* = "";
-        if (old_fields.fetchSwapRemove(new_path)) |old| {
+        if (gop.found_existing) {
+            assert(!old_fields.contains(new_path));
+            switch (options.duplicate_field_behavior) {
+                .@"error" => return error.DuplicateField,
+                .use_first => {
+                    try source.skipValue();
+                    continue;
+                },
+                .use_last => {},
+            }
+        } else if (old_fields.fetchSwapRemove(new_path)) |old| {
             gop.key_ptr.* = old.key;
             gop.value_ptr.* = old.value;
         } else {
             gop.key_ptr.* = try allocator.dupe(u8, new_path);
             gop.value_ptr.* = .{};
         }
-        assert(gop.key_ptr.len != 0);
 
         try gop.value_ptr.jsonParseRealloc(allocator, source, options);
     }
-    result.fields = new_fields;
+    result.fields = new_fields.move();
 }
 
 pub const Fields = std.ArrayHashMapUnmanaged([]const u8, Item, std.array_hash_map.StringContext, true);
@@ -175,6 +193,7 @@ pub const Item = struct {
             .ref, .summary, .description => {
                 var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
                 defer str.deinit();
+                str.clearRetainingCapacity();
                 field_ptr.* = null;
                 try schema_tools.jsonParseReallocString(&str, src, json_opt);
                 field_ptr.* = try str.toOwnedSlice();
@@ -247,20 +266,135 @@ pub const Item = struct {
             source: anytype,
             options: std.json.ParseOptions,
         ) std.json.ParseError(@TypeOf(source.*))!void {
-            _ = allocator;
-            _ = result;
+            const Resolution = @typeInfo(Param).Union.tag_type.?;
+            var resolution: ?Resolution = null;
 
-            var resolution: ?@typeInfo(Param).Union.tag_type.? = null;
-            _ = resolution;
+            var shared: struct {
+                description: ?[]const u8,
+            } = .{
+                .description = switch (result.*) {
+                    inline else => |*ptr| blk: {
+                        const val = ptr.description;
+                        ptr.description = null;
+                        break :blk val;
+                    },
+                },
+            };
+            errdefer allocator.free(shared.description orelse "");
+
+            var field_set = std.EnumSet(AnyFieldTag).initEmpty();
+
+            if (try source.next() != .object_begin) {
+                return error.UnexpectedToken;
+            }
 
             var pse: util.ProgressiveStringToEnum(AnyFieldTag) = .{};
             while (try util.json.nextProgressiveFieldToEnum(source, AnyFieldTag, &pse)) : (pse = .{}) {
                 const json_field_match: AnyFieldTag = pse.getMatch() orelse {
-                    if (options.ignore_unknown_fields) continue;
+                    if (options.ignore_unknown_fields) {
+                        try source.skipValue();
+                        continue;
+                    }
                     return error.UnknownField;
                 };
+                const is_duplicate = field_set.contains(json_field_match);
+                if (is_duplicate) switch (options.duplicate_field_behavior) {
+                    .@"error" => return error.DuplicateField,
+                    .use_first => {
+                        try source.skipValue();
+                        continue;
+                    },
+                    .use_last => {},
+                };
+                field_set.insert(json_field_match);
 
-                if (!json_field_match.exclusiveTo(null)) {}
+                const field_resolution: ?Resolution = switch (json_field_match) {
+                    .name,
+                    .in,
+                    .required,
+                    .deprecated,
+                    .allowEmptyValue,
+                    => .parameter,
+
+                    .@"$ref",
+                    .summary,
+                    => .reference,
+
+                    .description => null,
+                };
+                const field_res = field_resolution orelse {
+                    assert(json_field_match == .description);
+                    // NOTE: this assumes it is parsed the same as `Reference.parseFieldValue`
+                    switch (try source.peekNextTokenType()) {
+                        .string => {},
+                        else => return error.UnexpectedToken,
+                    }
+                    var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(shared.description orelse ""));
+                    defer new_str.deinit();
+
+                    shared.description = null;
+                    new_str.clearRetainingCapacity();
+
+                    try schema_tools.jsonParseReallocString(&new_str, source, options);
+                    shared.description = try new_str.toOwnedSlice();
+                    continue;
+                };
+                const res: Resolution = if (resolution) |res| blk: {
+                    if (field_res == res) break :blk res;
+                    if (options.ignore_unknown_fields) {
+                        try source.skipValue();
+                        continue;
+                    }
+                    return error.UnknownField;
+                } else blk: {
+                    if (result.* != field_res) {
+                        result.deinit(allocator);
+                        result.* = switch (field_res) {
+                            inline else => |tag| @unionInit(Param, @tagName(tag), .{}),
+                        };
+                    }
+                    resolution = field_res;
+                    break :blk field_res;
+                };
+
+                const JsonToZigFNM = schema_tools.JsonToZigFieldNameMap;
+                switch (res) {
+                    inline //
+                    .parameter,
+                    .reference,
+                    => |res_tag| switch (json_field_match) {
+                        inline else => |tag| {
+                            const T = std.meta.FieldType(Param, res_tag);
+                            const ZigFieldNames = JsonToZigFNM(T, T.json_field_names);
+                            if (!@hasField(ZigFieldNames, @tagName(tag))) {
+                                unreachable;
+                            }
+                            const FieldTag = std.meta.FieldEnum(T);
+                            const field_tag = @field(FieldTag, @field(ZigFieldNames{}, @tagName(tag)));
+                            const union_field_ptr = &@field(result, @tagName(res_tag));
+                            const result_field_ptr = &@field(union_field_ptr, @tagName(field_tag));
+                            try T.parseFieldValue(
+                                field_tag,
+                                result_field_ptr,
+                                !is_duplicate,
+                                allocator,
+                                source,
+                                options,
+                            );
+                        },
+                    },
+                }
+            }
+
+            switch (result.*) {
+                inline else => |*ptr, res_tag| {
+                    const T = std.meta.FieldType(Param, res_tag);
+                    const zig_fields = schema_tools.JsonToZigFieldNameMap(T, T.json_field_names){};
+                    inline for (@typeInfo(@TypeOf(shared)).Struct.fields) |field| {
+                        const zig_field = @field(zig_fields, field.name);
+                        @field(ptr, zig_field) = @field(shared, field.name);
+                    }
+                },
             }
         }
 
@@ -273,46 +407,21 @@ pub const Item = struct {
             allowEmptyValue,
 
             // exclusive to `Reference`
-            ref,
+            @"$ref",
             summary,
-            description,
 
             // shared
             description,
 
-            inline fn exclusiveTo(
-                tag: AnyFieldTag,
-                /// pass null to check if it's exclusive to either, such that
-                /// false means it's shared, and true means it is exclusive
-                maybe_which: ?@typeInfo(Param).Union.tag_type,
-            ) bool {
-                const ParameterJson = @TypeOf(Parameter.json_field_names);
-                const ReferenceJson = @TypeOf(Reference.json_field_names);
-                switch (tag) {
-                    inline else => |itag| {
-                        const field_name = @tagName(itag);
-                        if (maybe_which) |which| switch (which) {
-                            .parameter => {
-                                if (!@hasField(ParameterJson, field_name)) return false;
-                            },
-                            .reference => {
-                                if (!@hasField(ReferenceJson, field_name)) return false;
-                            },
-                        } else if (@hasField(ParameterJson, field_name) and @hasField(ReferenceJson, field_name)) {
-                            return false;
-                        }
-                    },
-                }
-                return true;
-            }
-
             comptime {
-                const parameter_fields = @typeInfo(@TypeOf(Parameter.json_field_names)).Struct.fields;
-                const reference_fields = @typeInfo(@TypeOf(Reference.json_field_names)).Struct.fields;
+                const JsonToZigFNM = schema_tools.JsonToZigFieldNameMap;
+                const parameter_fields = @typeInfo(JsonToZigFNM(Parameter, Parameter.json_field_names)).Struct.fields;
+                const reference_fields = @typeInfo(JsonToZigFNM(Reference, Reference.json_field_names)).Struct.fields;
 
                 for (parameter_fields ++ reference_fields) |field| {
                     if (@hasField(AnyFieldTag, field.name)) continue;
-                    @compileError("Missing field '" ++ field.name ++ "'");
+                    const zig_name = util.transmuteComptimePtr([]const u8, field.default_value.?);
+                    @compileError("Missing field '" ++ field.name ++ "' for '" ++ zig_name ++ "'");
                 }
             }
         };
@@ -388,20 +497,30 @@ pub const Item = struct {
                             .string => {},
                         }
                         if (overwritten_count < overwritable_count) {
-                            defer overwritten_count += 1;
                             var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(list.items[overwritten_count]));
                             defer new_str.deinit();
                             list.items[overwritten_count] = "";
                             try schema_tools.jsonParseReallocString(&new_str, src, json_opt);
                             list.items[overwritten_count] = try new_str.toOwnedSlice();
+                            overwritten_count += 1;
                             continue;
                         }
+                        try list.ensureUnusedCapacity(1);
                         const new_str = try src.nextAllocMax(
                             ally,
                             .alloc_always,
                             json_opt.max_value_len orelse std.json.default_max_value_len,
                         );
-                        try list.append(new_str.allocated_string);
+                        errdefer ally.free(new_str);
+
+                        list.appendAssumeCapacity(new_str.allocated_string);
+                    }
+
+                    if (overwritten_count < overwritable_count) {
+                        for (list.items[overwritten_count..]) |left_over| {
+                            ally.free(left_over);
+                        }
+                        list.shrinkRetainingCapacity(overwritten_count);
                     }
 
                     field_ptr.* = try list.toOwnedSlice();
@@ -409,6 +528,7 @@ pub const Item = struct {
                 .summary, .description => {
                     var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
                     defer str.deinit();
+                    str.clearRetainingCapacity();
                     field_ptr.* = null;
                     try schema_tools.jsonParseReallocString(&str, src, json_opt);
                     field_ptr.* = try str.toOwnedSlice();

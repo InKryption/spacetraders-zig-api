@@ -283,19 +283,26 @@ pub fn defaultValue(
     const field_index = std.meta.fieldIndex(T, field_name).?;
     const field_info = @typeInfo(T).Struct.fields[field_index];
     const ptr = field_info.default_value orelse return null;
-    const Dummy = @Type(.{ .Struct = .{
+    return transmuteComptimePtr(field_info.type, ptr);
+}
+
+pub inline fn transmuteComptimePtr(
+    comptime T: type,
+    comptime type_erased_ptr: *const anyopaque,
+) T {
+    const Transmuter = @Type(.{ .Struct = .{
         .layout = .Auto,
         .backing_integer = null,
         .is_tuple = false,
         .decls = &.{},
         .fields = &[_]std.builtin.Type.StructField{.{
             .name = "value",
-            .type = field_info.type,
-            .default_value = ptr,
+            .type = T,
+            .default_value = type_erased_ptr,
             .is_comptime = true,
             .alignment = 0,
         }},
     } });
-    const dummy = Dummy{};
-    return dummy.value;
+    const transmuter: Transmuter = .{};
+    return transmuter.value;
 }

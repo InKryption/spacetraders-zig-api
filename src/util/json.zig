@@ -67,7 +67,7 @@ pub fn nextProgressiveFieldToEnum(
     source: anytype,
     comptime E: type,
     pse: *util.ProgressiveStringToEnum(E),
-) (@TypeOf(source.*).PeekError || @TypeOf(source.*).NextError || error{UnexpectedToken})!bool {
+) (@TypeOf(source.*).PeekError || @TypeOf(source.*).NextError)!bool {
     switch (try source.peekNextTokenType()) {
         else => unreachable,
         .object_end => {

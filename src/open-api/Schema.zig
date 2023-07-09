@@ -14,17 +14,17 @@ info: Info = .{},
 json_schema_dialect: ?[]const u8 = null,
 servers: ?[]const Server = null,
 paths: ?Paths = null,
-// webhooks: ?Webhooks,
-// components: ?Components,
-// security: ?Security,
+// webhooks: ?Webhooks = null,
+// components: ?Components = null,
+// security: ?Security = null,
 
 // /// [Tag Object]
 // ///  A list of tags used by the document with additional metadata. The order of the tags can be used to reflect on their order by the parsing tools. Not all tags that are used by the Operation Object must be declared. The tags that are not declared MAY be organized randomly or based on the tools’ logic. Each tag name in the list MUST be unique.
-// tags,
+// tags: ?Tags = null,
 
 // /// External Documentation Object
 // ///  Additional external documentation.
-// externalDocs,
+// externalDocs: ?ExternalDocs = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Schema, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Schema){
@@ -41,6 +41,10 @@ pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
             @constCast(server).deinit(allocator);
         }
         allocator.free(servers);
+    }
+    if (self.paths) |paths| {
+        var copy = paths;
+        copy.deinit(allocator);
     }
 }
 
@@ -71,6 +75,7 @@ inline fn parseFieldValue(
         inline .openapi, .json_schema_dialect => {
             var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
             defer str.deinit();
+            str.clearRetainingCapacity();
             field_ptr.* = "";
             try schema_tools.jsonParseReallocString(&str, src, json_opt);
             field_ptr.* = try str.toOwnedSlice();
@@ -112,19 +117,19 @@ test Schema {
     var scanner = std.json.Scanner.initCompleteInput(std.testing.allocator, src);
     defer scanner.deinit();
 
-    // const expected_src: []const u8 = blk: {
-    //     const parsed = try std.json.parseFromTokenSource(std.json.Value, std.testing.allocator, &scanner, .{});
-    //     defer parsed.deinit();
-    //     break :blk try std.json.stringifyAlloc(std.testing.allocator, parsed.value, .{ .whitespace = .{} });
-    // };
-    // defer std.testing.allocator.free(expected_src);
+    const expected_src: []const u8 = blk: {
+        const parsed = try std.json.parseFromTokenSource(std.json.Value, std.testing.allocator, &scanner, .{});
+        defer parsed.deinit();
+        break :blk try std.json.stringifyAlloc(std.testing.allocator, parsed.value, .{ .whitespace = .{} });
+    };
+    defer std.testing.allocator.free(expected_src);
 
     scanner.deinit();
     scanner = std.json.Scanner.initCompleteInput(std.testing.allocator, src);
     var diag = std.json.Diagnostics{};
     scanner.enableDiagnostics(&diag);
 
-    const openapi_json = std.json.parseFromTokenSourceLeaky(Schema, std.testing.allocator, &scanner, std.json.ParseOptions{ .ignore_unknown_fields = true }) catch |err| {
+    const openapi_json = std.json.parseFromTokenSourceLeaky(Schema, std.testing.allocator, &scanner, std.json.ParseOptions{ .ignore_unknown_fields = false }) catch |err| {
         const start = std.mem.lastIndexOfScalar(u8, src[0 .. std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n') orelse 0], '\n') orelse 0;
         const end = std.mem.indexOfScalarPos(u8, src[0..], diag.getByteOffset(), '\n') orelse src.len;
 

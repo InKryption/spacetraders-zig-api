@@ -125,10 +125,14 @@ pub fn jsonParseInPlaceArrayListTemplate(
             overwritten_count += 1;
             continue;
         }
-        try results.append(allocator, try T.jsonParse(allocator, source, options));
+        try results.ensureUnusedCapacity(allocator, 1);
+        results.appendAssumeCapacity(try T.jsonParse(allocator, source, options));
     }
 
     if (overwritten_count < overwritable_count) {
+        for (results.items[overwritten_count..]) |*left_over| {
+            left_over.deinit(allocator);
+        }
         results.shrinkRetainingCapacity(overwritten_count);
     }
 }

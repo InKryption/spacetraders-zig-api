@@ -13,7 +13,7 @@ deprecated: ?bool = null,
 allow_empty_value: ?bool = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Parameter, .{});
-pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Parameter){
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Parameter){
     .allow_empty_value = "allowEmptyValue",
 };
 
@@ -22,17 +22,22 @@ pub fn deinit(param: Parameter, allocator: std.mem.Allocator) void {
     allocator.free(param.description orelse "");
 }
 
+pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
+    Parameter,
+    Parameter.json_field_names,
+);
+
 pub fn jsonParseRealloc(
     result: *Parameter,
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    try schema_tools.jsonParseInPlaceTemplate(Parameter, result, allocator, source, options);
+    try schema_tools.jsonParseInPlaceTemplate(Parameter, result, allocator, source, options, Parameter.parseFieldValue);
 }
-inline fn parseFieldValue(
+pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Parameter),
-    field_ptr: anytype,
+    field_ptr: *std.meta.FieldType(Parameter, field_tag),
     is_new: bool,
     ally: std.mem.Allocator,
     src: anytype,
@@ -43,6 +48,7 @@ inline fn parseFieldValue(
         .name, .description => {
             var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
             defer new_str.deinit();
+            new_str.clearRetainingCapacity();
             field_ptr.* = "";
             try schema_tools.jsonParseReallocString(&new_str, src, json_opt);
             field_ptr.* = try new_str.toOwnedSlice();
@@ -67,4 +73,15 @@ pub const In = enum {
     header,
     path,
     cookie,
+
+    pub fn jsonStringify(
+        in: In,
+        options: std.json.StringifyOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        _ = options;
+        switch (in) {
+            inline else => |tag| try writer.writeAll("\"" ++ @tagName(tag) ++ "\""),
+        }
+    }
 };

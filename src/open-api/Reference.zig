@@ -8,7 +8,7 @@ summary: ?[]const u8 = null,
 description: ?[]const u8 = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Reference, .{});
-pub const json_field_names = schema_tools.JsonStringifyFieldNameMap(Reference){
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Reference){
     .ref = "$ref",
 };
 
@@ -18,6 +18,11 @@ pub fn deinit(ref: Reference, allocator: std.mem.Allocator) void {
     allocator.free(ref.description orelse "");
 }
 
+pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
+    Reference,
+    Reference.json_field_names,
+);
+
 pub fn jsonParseRealloc(
     result: *Reference,
     allocator: std.mem.Allocator,
@@ -26,7 +31,7 @@ pub fn jsonParseRealloc(
 ) std.json.ParseError(@TypeOf(source.*))!void {
     try schema_tools.jsonParseInPlaceTemplate(Reference, result, allocator, source, options, Reference.parseFieldValue);
 }
-inline fn parseFieldValue(
+pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Reference),
     field_ptr: anytype,
     is_new: bool,
@@ -36,7 +41,7 @@ inline fn parseFieldValue(
 ) !void {
     _ = is_new;
     _ = field_tag;
-    var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
+    var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
     defer new_str.deinit();
     field_ptr.* = "";
     try schema_tools.jsonParseReallocString(&new_str, src, json_opt);
