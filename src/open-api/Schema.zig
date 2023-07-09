@@ -102,8 +102,7 @@ inline fn parseFieldValue(
 }
 
 test Schema {
-    const src =
-        @embedFile("../../SpaceTraders.json")
+    const src = @embedFile("SpaceTraders.json")
     // \\{
     // \\    "openapi": "3.0.0",
     // \\    "info": {

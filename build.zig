@@ -91,6 +91,11 @@ fn localTesting(
     target: std.zig.CrossTarget,
     optimize: std.builtin.OptimizeMode,
 ) void {
+    const test_api_step = b.step("test-api", "Test the API");
+    const test_install_step = b.step("test-install", "Generate the API and install the file");
+    const test_openapi_step = b.step("test-openapi", "Run tests for the in-house OpenAPI json schema");
+
+    // git clone api-docs
     const git_clone_api_docs = b.addSystemCommand(&.{
         "git",
         "clone",
@@ -101,30 +106,77 @@ fn localTesting(
             b.cache_root.join(b.allocator, &.{"o"}) catch |err| @panic(@errorName(err)),
         }),
     });
-
     const apidocs_dir = git_clone_api_docs.addOutputFileArg("");
-    const generate_api_run = b.addRunArtifact(generate_api);
-    const api_src_file = runGenerator(generate_api_run, .{
+
+    // generate api
+    const api_src_file = runGenerator(b.addRunArtifact(generate_api), .{
         .number_format = number_format,
         .json_as_comment = json_as_comment,
         .log_level = log_level,
         .apidocs_dir = apidocs_dir,
     });
+    const api_mod = b.createModule(.{
+        .source_file = api_src_file,
+    });
 
-    const test_install = b.step("test-install", "Generate the API and install the file");
+    // test-install
     const install_file = b.addInstallFile(api_src_file, "api.zig");
-    test_install.dependOn(&install_file.step);
+    test_install_step.dependOn(&install_file.step);
 
-    const test_exe = b.addTest(Build.TestOptions{
+    // test-api
+    const test_api = b.addTest(Build.TestOptions{
         .root_source_file = Build.FileSource.relative("src/test-api.zig"),
         .target = target,
         .optimize = optimize,
     });
-    test_exe.addAnonymousModule("api", Build.CreateModuleOptions{
-        .source_file = api_src_file,
-    });
+    test_api.addModule("api", api_mod);
+    const run_test_api = b.addRunArtifact(test_api);
+    test_api_step.dependOn(&run_test_api.step);
 
-    const run_test_exe = b.addRunArtifact(test_exe);
-    const test_api_step = b.step("test-api", "Test the API");
-    test_api_step.dependOn(&run_test_exe.step);
+    const test_openapi = b.addTest(Build.TestOptions{
+        .root_source_file = Build.FileSource.relative("src/open-api/Schema.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_openapi.addAnonymousModule("util", .{
+        .source_file = Build.FileSource.relative("src/util/util.zig"),
+    });
+    test_openapi.addAnonymousModule("SpaceTraders.json", .{
+        .source_file = relativeFileSource(b, apidocs_dir, "reference/SpaceTraders.json"),
+    });
+    const run_test_openapi = b.addRunArtifact(test_openapi);
+    test_openapi_step.dependOn(&run_test_openapi.step);
+}
+
+fn relativeFileSource(b: *Build, path: Build.FileSource, relative: []const u8) Build.FileSource {
+    const RelativeStep = struct {
+        step: Build.Step,
+        base: Build.FileSource,
+        relative: []const u8,
+        generated: Build.GeneratedFile,
+
+        fn make(step: *Build.Step, prog_node: *std.Progress.Node) anyerror!void {
+            _ = prog_node;
+            const self = @fieldParentPtr(@This(), "step", step);
+            self.generated.path = step.owner.pathJoin(&.{ self.base.getPath(step.owner), self.relative });
+        }
+    };
+    const relative_step: *RelativeStep = b.allocator.create(RelativeStep) catch |err| @panic(@errorName(err));
+    relative_step.* = .{
+        .step = Build.Step.init(Build.Step.StepOptions{
+            .id = .custom,
+            .name = b.fmt("make path relative to {s}", .{path.getDisplayName()}),
+            .owner = b,
+            .makeFn = RelativeStep.make,
+        }),
+        .base = path,
+        .relative = b.dupe(relative),
+        .generated = Build.GeneratedFile{
+            .step = &relative_step.step,
+        },
+    };
+    path.addStepDependencies(&relative_step.step);
+    return Build.FileSource{
+        .generated = &relative_step.generated,
+    };
 }
