@@ -21,11 +21,15 @@ paths: ?Paths = null,
 security: ?[]const SecurityRequirement = null,
 
 // /// [Tag Object]
-// ///  A list of tags used by the document with additional metadata. The order of the tags can be used to reflect on their order by the parsing tools. Not all tags that are used by the Operation Object must be declared. The tags that are not declared MAY be organized randomly or based on the tools’ logic. Each tag name in the list MUST be unique.
+// ///  A list of tags used by the document with additional metadata.
+// /// The order of the tags can be used to reflect on their order by the parsing tools.
+// /// Not all tags that are used by the Operation Object must be declared.
+// /// The tags that are not declared MAY be organized randomly or based on the tools’ logic.
+// /// Each tag name in the list MUST be unique.
 // tags: ?Tags = null,
 
 // /// External Documentation Object
-// ///  Additional external documentation.
+// /// Additional external documentation.
 // externalDocs: ?ExternalDocs = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Schema, .{});
@@ -153,7 +157,7 @@ test Schema {
         std.testing.allocator,
         &scanner,
         std.json.ParseOptions{
-            .ignore_unknown_fields = true,
+            .ignore_unknown_fields = false,
         },
     ) catch |err| {
         const start = std.mem.lastIndexOfScalar(u8, src[0 .. std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n') orelse 0], '\n') orelse 0;
