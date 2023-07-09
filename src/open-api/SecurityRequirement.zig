@@ -27,10 +27,30 @@ pub fn jsonStringify(
     options: std.json.StringifyOptions,
     writer: anytype,
 ) !void {
-    _ = secreq;
-    _ = options;
-    _ = writer;
-    @panic("TODO");
+    try writer.writeByte('{');
+    var field_output = false;
+    var child_options = options;
+    child_options.whitespace.indent_level += 1;
+
+    var iter = secreq.fields.iterator();
+    while (iter.next()) |entry| {
+        if (field_output) {
+            try writer.writeByte(',');
+        } else field_output = true;
+
+        try child_options.whitespace.outputIndent(writer);
+
+        try std.json.stringify(entry.key_ptr.*, options, writer);
+        try writer.writeByte(':');
+        if (child_options.whitespace.separator) {
+            try writer.writeByte(' ');
+        }
+        try std.json.stringify(entry.value_ptr.*, child_options, writer);
+    }
+    if (field_output) {
+        try options.whitespace.outputIndent(writer);
+    }
+    try writer.writeByte('}');
 }
 
 pub fn jsonParse(
