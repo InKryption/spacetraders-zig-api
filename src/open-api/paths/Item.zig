@@ -20,12 +20,14 @@ trace: ?Operation = null,
 servers: ?[]const Server = null,
 parameters: ?[]const Param = null,
 
-pub const Param = @import("param.zig").Param;
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Item, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Item){
     .ref = "$ref",
 };
+
+pub const Param = @import("param.zig").Param;
+
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
     Item,
     Item.json_field_names,

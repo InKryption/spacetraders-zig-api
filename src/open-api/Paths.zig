@@ -1,12 +1,5 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const util = @import("util");
-
-const schema_tools = @import("schema-tools.zig");
-
-const Server = @import("Server.zig");
-const Parameter = @import("Parameter.zig");
-const Reference = @import("Reference.zig");
 
 const Paths = @This();
 fields: Fields = .{},

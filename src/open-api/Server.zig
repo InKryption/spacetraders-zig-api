@@ -10,6 +10,14 @@ variables: ?VariableMap = null,
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Server, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
 
+pub const Variable = @import("server/Variable.zig");
+pub const VariableMap = std.ArrayHashMapUnmanaged(
+    []const u8,
+    Variable,
+    std.array_hash_map.StringContext,
+    true,
+);
+
 pub fn deinit(server: *Server, allocator: std.mem.Allocator) void {
     allocator.free(server.url);
     allocator.free(server.description orelse "");
@@ -81,7 +89,8 @@ pub fn jsonParseRealloc(
 
     try schema_tools.jsonParseInPlaceTemplate(Server, result, allocator, source, options, Server.parseFieldValue);
 }
-inline fn parseFieldValue(
+
+pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Server),
     field_ptr: *std.meta.FieldType(Server, field_tag),
     is_new: bool,
@@ -119,95 +128,6 @@ inline fn parseFieldValue(
         },
     }
 }
-
-pub const VariableMap = std.ArrayHashMapUnmanaged([]const u8, Variable, std.array_hash_map.StringContext, true);
-pub const Variable = struct {
-    /// [string]
-    /// An enumeration of string values to be used if the substitution options are from a limited set.
-    /// The array MUST NOT be empty.
-    ///
-    /// real name: 'enum'
-    enumeration: ?Enum,
-    /// string
-    ///
-    /// REQUIRED.
-    ///
-    /// The default value to use for substitution,
-    /// which SHALL be sent if an alternate value is not supplied.
-    /// Note this behavior is different than the Schema Object’s treatment of default values,
-    /// because in those cases parameter values are optional.
-    /// If the enum is defined, the value MUST exist in the enum’s values.
-    default: []const u8,
-    /// string
-    ///
-    /// An optional description for the server variable.
-    /// CommonMark syntax MAY be used for rich text representation.
-    description: ?[]const u8,
-
-    pub const empty = Variable{
-        .enumeration = null,
-        .default = "",
-        .description = null,
-    };
-    pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Variable, .{});
-    pub const json_field_names = .{
-        .enumeration = "enum",
-    };
-    pub fn jsonStringify(
-        server: Variable,
-        options: std.json.StringifyOptions,
-        writer: anytype,
-    ) @TypeOf(writer).Error!void {
-        const simpler = .{
-            .enumeration = if (server.enumeration) |enumeration| enumeration.keys() else null,
-            .default = server.default,
-            .description = server.description,
-        };
-        const generatedStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(@TypeOf(simpler), Variable.json_field_names);
-        try generatedStringify(simpler, options, writer);
-    }
-
-    pub fn deinit(variable: *Variable, allocator: std.mem.Allocator) void {
-        if (variable.enumeration) |*enumeration| {
-            for (enumeration.keys()) |value| {
-                allocator.free(value);
-            }
-            enumeration.deinit(allocator);
-        }
-    }
-
-    pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Variable {
-        var result: Variable = Variable.empty;
-        errdefer result.deinit(allocator);
-        try Variable.jsonParseRealloc(&result, allocator, source, options);
-        return result;
-    }
-    pub fn jsonParseRealloc(
-        result: *Variable,
-        allocator: std.mem.Allocator,
-        source: anytype,
-        options: std.json.ParseOptions,
-    ) std.json.ParseError(@TypeOf(source.*))!void {
-        try schema_tools.jsonParseInPlaceTemplate(Variable, result, allocator, source, options, Variable.parseFieldValue);
-    }
-    inline fn parseFieldValue(
-        comptime field_tag: std.meta.FieldEnum(Variable),
-        field_ptr: *std.meta.FieldType(Variable, field_tag),
-        is_new: bool,
-        ally: std.mem.Allocator,
-        src: anytype,
-        json_opt: std.json.ParseOptions,
-    ) !void {
-        _ = field_ptr;
-        _ = json_opt;
-        _ = src;
-        _ = ally;
-        _ = is_new;
-        unreachable;
-    }
-
-    pub const Enum = std.ArrayHashMapUnmanaged([]const u8, void, std.array_hash_map.StringContext, true);
-};
 
 fn jsonStringifyVariableMap(
     variables: *const VariableMap,

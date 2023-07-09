@@ -1,11 +1,10 @@
 //! OpenAPI Specification Version 3.1.0
 const std = @import("std");
-const assert = std.debug.assert;
 const util = @import("util");
 
 const schema_tools = @import("schema-tools.zig");
-pub const Paths = @import("Paths.zig");
 pub const Info = @import("Info.zig");
+pub const Paths = @import("Paths.zig");
 pub const Server = @import("Server.zig");
 pub const Parameter = @import("Parameter.zig");
 pub const Reference = @import("Reference.zig");
@@ -32,7 +31,6 @@ pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(S
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Schema){
     .json_schema_dialect = "jsonSchemaDialect",
 };
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(Schema, Schema.json_field_names);
 
 pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
     allocator.free(self.openapi);
@@ -50,12 +48,18 @@ pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
     }
 }
 
+pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
+    Schema,
+    Schema.json_field_names,
+);
+
 pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Schema {
     var result: Schema = .{};
     errdefer result.deinit(allocator);
     try jsonParseRealloc(&result, allocator, source, options);
     return result;
 }
+
 pub fn jsonParseRealloc(
     result: *Schema,
     allocator: std.mem.Allocator,
@@ -64,7 +68,8 @@ pub fn jsonParseRealloc(
 ) std.json.ParseError(@TypeOf(source.*))!void {
     try schema_tools.jsonParseInPlaceTemplate(Schema, result, allocator, source, options, Schema.parseFieldValue);
 }
-inline fn parseFieldValue(
+
+pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Schema),
     field_ptr: anytype,
     is_new: bool,
@@ -141,4 +146,3 @@ test Schema {
 
     try util.json.expectEqual(src, openapi_json, .{});
 }
-
