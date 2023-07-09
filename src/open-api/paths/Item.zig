@@ -26,6 +26,10 @@ pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(I
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Item){
     .ref = "$ref",
 };
+pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
+    Item,
+    Item.json_field_names,
+);
 
 pub fn deinit(item: *Item, allocator: std.mem.Allocator) void {
     allocator.free(item.ref orelse "");

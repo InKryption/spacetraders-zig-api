@@ -7,6 +7,8 @@ const schema_tools = @import("schema-tools.zig");
 pub const Paths = @import("Paths.zig");
 pub const Info = @import("Info.zig");
 pub const Server = @import("Server.zig");
+pub const Parameter = @import("Parameter.zig");
+pub const Reference = @import("Reference.zig");
 
 const Schema = @This();
 openapi: []const u8 = "",
@@ -137,71 +139,6 @@ test Schema {
     };
     defer openapi_json.deinit(std.testing.allocator);
 
-    try expectEqualJson(src, openapi_json, .{});
+    try util.json.expectEqual(src, openapi_json, .{});
 }
 
-fn expectEqualJson(a: anytype, b: anytype, options: std.json.ParseOptions) (error{TestExpectedEqual} || std.json.ParseError(std.json.Scanner))!void {
-    const A = @TypeOf(a);
-    const B = @TypeOf(b);
-    if (A != std.json.Value) {
-        if (comptime !std.meta.trait.isZigString(A)) {
-            const a_str = std.json.stringifyAlloc(std.testing.allocator, a, .{}) catch |err| @panic(@errorName(err));
-            defer std.testing.allocator.free(a_str);
-            return expectEqualJson(a_str, b, options);
-        }
-        const a_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, a, options);
-        defer a_json.deinit();
-        return expectEqualJson(a_json.value, b, options);
-    }
-
-    if (B != std.json.Value) {
-        if (comptime !std.meta.trait.isZigString(B)) {
-            const b_str = std.json.stringifyAlloc(std.testing.allocator, b, .{}) catch |err| @panic(@errorName(err));
-            defer std.testing.allocator.free(b_str);
-            return expectEqualJson(a, b_str, options);
-        }
-        const b_json = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, b, options);
-        defer b_json.deinit();
-        return expectEqualJson(a, b_json.value, options);
-    }
-    const expected_tag: @typeInfo(std.json.Value).Union.tag_type.? = a;
-
-    try std.testing.expectEqual(expected_tag, b);
-    switch (a) {
-        .null => {},
-        inline //
-        .bool,
-        .integer,
-        .float,
-        => |expected, tag| try std.testing.expectEqual(expected, @field(b, @tagName(tag))),
-
-        inline //
-        .number_string,
-        .string,
-        => |expected, tag| try std.testing.expectEqualStrings(expected, @field(b, @tagName(tag))),
-
-        .array => |expected| {
-            try std.testing.expectEqual(expected.items.len, b.array.items.len);
-            for (expected.items, b.array.items, 0..) |expected_item, actual_item, i| {
-                errdefer std.log.err("Difference occurred between elements at index {d}", .{i});
-                try expectEqualJson(expected_item, actual_item, options);
-            }
-        },
-
-        .object => |expected| {
-            try std.testing.expectEqual(expected.count(), b.object.count());
-            var iter = expected.iterator();
-            var i: usize = 0;
-            while (iter.next()) |expected_entry| : (i += 1) {
-                errdefer std.log.err("Difference occurred between elements on iteration {d}", .{i});
-                const actual_entry = b.object.getEntry(expected_entry.key_ptr.*) orelse
-                    return if (std.testing.expectEqual(@as(?@TypeOf(expected_entry), expected_entry), null)) |_|
-                    unreachable
-                else |err|
-                    err;
-                try std.testing.expectEqualStrings(expected_entry.key_ptr.*, actual_entry.key_ptr.*);
-                try expectEqualJson(expected_entry.value_ptr.*, actual_entry.value_ptr.*, options);
-            }
-        },
-    }
-}

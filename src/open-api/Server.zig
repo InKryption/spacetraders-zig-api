@@ -9,6 +9,19 @@ variables: ?VariableMap = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Server, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
+
+pub fn deinit(server: *Server, allocator: std.mem.Allocator) void {
+    allocator.free(server.url);
+    allocator.free(server.description orelse "");
+    if (server.variables) |*variables| {
+        for (variables.keys(), variables.values()) |key, *value| {
+            allocator.free(key);
+            value.deinit(allocator);
+        }
+        variables.deinit(allocator);
+    }
+}
+
 pub fn jsonStringify(
     server: Server,
     options: std.json.StringifyOptions,
@@ -49,18 +62,6 @@ pub fn jsonStringify(
 
     try options.whitespace.outputIndent(writer);
     try writer.writeByte('}');
-}
-
-pub fn deinit(server: *Server, allocator: std.mem.Allocator) void {
-    allocator.free(server.url);
-    allocator.free(server.description orelse "");
-    if (server.variables) |*variables| {
-        for (variables.keys(), variables.values()) |key, *value| {
-            allocator.free(key);
-            value.deinit(allocator);
-        }
-        variables.deinit(allocator);
-    }
 }
 
 pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Server {
