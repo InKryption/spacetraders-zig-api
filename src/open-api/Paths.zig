@@ -57,7 +57,9 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    if (try source.next() != .object_begin) return error.UnexpectedToken;
+    if (try source.next() != .object_begin) {
+        return error.UnexpectedToken;
+    }
 
     var old_fields = result.fields.move();
     defer {

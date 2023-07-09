@@ -8,6 +8,7 @@ pub const Paths = @import("Paths.zig");
 pub const Server = @import("Server.zig");
 pub const Parameter = @import("Parameter.zig");
 pub const Reference = @import("Reference.zig");
+pub const SecurityRequirement = @import("SecurityRequirement.zig");
 
 const Schema = @This();
 openapi: []const u8 = "",
@@ -17,7 +18,7 @@ servers: ?[]const Server = null,
 paths: ?Paths = null,
 // webhooks: ?Webhooks = null,
 // components: ?Components = null,
-// security: ?Security = null,
+security: ?[]const SecurityRequirement = null,
 
 // /// [Tag Object]
 // ///  A list of tags used by the document with additional metadata. The order of the tags can be used to reflect on their order by the parsing tools. Not all tags that are used by the Operation Object must be declared. The tags that are not declared MAY be organized randomly or based on the tools’ logic. Each tag name in the list MUST be unique.
@@ -45,6 +46,13 @@ pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
     if (self.paths) |paths| {
         var copy = paths;
         copy.deinit(allocator);
+    }
+
+    if (self.security) |security| {
+        for (@constCast(security)) |*secreq| {
+            secreq.deinit(allocator);
+        }
+        allocator.free(security);
     }
 }
 
@@ -104,6 +112,18 @@ pub inline fn parseFieldValue(
                 field_ptr.* = .{};
             }
             try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+        },
+
+        .security => {
+            var list = std.ArrayListUnmanaged(SecurityRequirement).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
+            defer {
+                for (list.items) |*security| 
+                    security.deinit(ally);
+                list.deinit(ally);
+            }
+            field_ptr.* = null;
+            try schema_tools.jsonParseInPlaceArrayListTemplate(SecurityRequirement, &list, ally, src, json_opt);
+            field_ptr.* = try list.toOwnedSlice(ally);
         },
     }
 }
