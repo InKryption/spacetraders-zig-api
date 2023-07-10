@@ -195,3 +195,67 @@ pub fn expectEqual(
         },
     }
 }
+
+pub inline fn arrayHashMapStringifyObjectIterator(
+    array_hash_map: anytype,
+) T: {
+    const Map = @TypeOf(array_hash_map);
+    assert(std.meta.FieldType(Map.KV, .key) == []const u8);
+    const V = std.meta.FieldType(Map.KV, .value);
+    const Managed = if (@hasField(Map, "ctx")) Map else Map.Managed;
+    const Ctx = std.meta.FieldType(Managed, .ctx);
+    const store_hash = Managed.Unmanaged.Hash == u32;
+    break :T ArrayHashMapStringifyObjectIterator(V, Ctx, store_hash);
+} {
+    return .{
+        .iter = array_hash_map.iterator(),
+    };
+}
+pub fn ArrayHashMapStringifyObjectIterator(
+    comptime V: type,
+    comptime Ctx: type,
+    comptime store_hash: bool,
+) type {
+    return struct {
+        iter: Map.Iterator,
+        const Self = @This();
+
+        const Map = std.ArrayHashMapUnmanaged([]const u8, V, Ctx, store_hash);
+
+        const Entry = struct { name: []const u8, value: V };
+        pub inline fn next(iter: *Self) ?Entry {
+            const entry = iter.iter.next() orelse return null;
+            return Entry{
+                .name = entry.key_ptr.*,
+                .value = entry.value_ptr.*,
+            };
+        }
+    };
+}
+
+pub fn stringifyObject(
+    /// should be an iterator with a method of the form `pub fn next() ?struct { name: []const u8, value: T }`
+    iterator: anytype,
+    options: std.json.StringifyOptions,
+    writer: anytype,
+) !void {
+    try writer.writeByte('{');
+    var field_output = false;
+    var child_options = options;
+    child_options.whitespace.indent_level += 1;
+
+    while (iterator.next()) |entry| {
+        if (field_output) {
+            try writer.writeByte(',');
+        } else field_output = true;
+
+        try child_options.whitespace.outputIndent(writer);
+
+        try std.json.stringify(entry.name, options, writer);
+        try writer.writeByte(':');
+        if (child_options.whitespace.separator) {
+            try writer.writeByte(' ');
+        }
+        try std.json.stringify(entry.value, child_options, writer);
+    }
+}

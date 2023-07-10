@@ -20,7 +20,6 @@ trace: ?Operation = null,
 servers: ?[]const Server = null,
 parameters: ?[]const Param = null,
 
-
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Item, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Item){
     .ref = "$ref",
@@ -64,10 +63,19 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    try schema_tools.jsonParseInPlaceTemplate(Item, result, allocator, source, options, Item.parseFieldValue);
+    var field_set = schema_tools.FieldEnumSet(Item).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(
+        Item,
+        result,
+        allocator,
+        source,
+        options,
+        &field_set,
+        Item.parseFieldValue,
+    );
 }
 
-inline fn parseFieldValue(
+pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Item),
     field_ptr: *std.meta.FieldType(Item, field_tag),
     is_new: bool,
@@ -148,7 +156,16 @@ pub const Operation = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        try schema_tools.jsonParseInPlaceTemplate(Operation, result, allocator, source, options, Operation.parseFieldValue);
+        var field_set = schema_tools.FieldEnumSet(Operation).initEmpty();
+        try schema_tools.jsonParseInPlaceTemplate(
+            Operation,
+            result,
+            allocator,
+            source,
+            options,
+            &field_set,
+            Operation.parseFieldValue,
+        );
     }
 
     inline fn parseFieldValue(

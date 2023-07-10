@@ -84,10 +84,8 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    const helper = struct {};
-    _ = helper;
-
-    try schema_tools.jsonParseInPlaceTemplate(Server, result, allocator, source, options, Server.parseFieldValue);
+    var field_set = schema_tools.FieldEnumSet(Server).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(Server, result, allocator, source, options, &field_set, Server.parseFieldValue);
 }
 
 pub inline fn parseFieldValue(

@@ -8,7 +8,10 @@ pub const Paths = @import("Paths.zig");
 pub const Server = @import("Server.zig");
 pub const Parameter = @import("Parameter.zig");
 pub const Reference = @import("Reference.zig");
+pub const Webhooks = @import("Webhooks.zig");
 pub const SecurityRequirement = @import("SecurityRequirement.zig");
+pub const Tag = @import("Tag.zig");
+pub const ExternalDocs = @import("ExternalDocs.zig");
 
 const Schema = @This();
 openapi: []const u8 = "",
@@ -16,25 +19,16 @@ info: Info = .{},
 json_schema_dialect: ?[]const u8 = null,
 servers: ?[]const Server = null,
 paths: ?Paths = null,
-// webhooks: ?Webhooks = null,
+webhooks: ?Webhooks = null,
 // components: ?Components = null,
 security: ?[]const SecurityRequirement = null,
-
-// /// [Tag Object]
-// ///  A list of tags used by the document with additional metadata.
-// /// The order of the tags can be used to reflect on their order by the parsing tools.
-// /// Not all tags that are used by the Operation Object must be declared.
-// /// The tags that are not declared MAY be organized randomly or based on the tools’ logic.
-// /// Each tag name in the list MUST be unique.
-// tags: ?Tags = null,
-
-// /// External Documentation Object
-// /// Additional external documentation.
-// externalDocs: ?ExternalDocs = null,
+tags: ?[]const Tag = null,
+external_docs: ?ExternalDocs = null,
 
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Schema, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Schema){
     .json_schema_dialect = "jsonSchemaDialect",
+    .external_docs = "externalDocs",
 };
 
 pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
@@ -78,7 +72,16 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    try schema_tools.jsonParseInPlaceTemplate(Schema, result, allocator, source, options, Schema.parseFieldValue);
+    var field_set = schema_tools.FieldEnumSet(Schema).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(
+        Schema,
+        result,
+        allocator,
+        source,
+        options,
+        &field_set,
+        Schema.parseFieldValue,
+    );
 }
 
 pub inline fn parseFieldValue(
@@ -117,11 +120,17 @@ pub inline fn parseFieldValue(
             }
             try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
         },
+        .webhooks => {
+            if (field_ptr.* == null) {
+                field_ptr.* = .{};
+            }
+            try Webhooks.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+        },
 
         .security => {
             var list = std.ArrayListUnmanaged(SecurityRequirement).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
             defer {
-                for (list.items) |*security| 
+                for (list.items) |*security|
                     security.deinit(ally);
                 list.deinit(ally);
             }
@@ -129,8 +138,46 @@ pub inline fn parseFieldValue(
             try schema_tools.jsonParseInPlaceArrayListTemplate(SecurityRequirement, &list, ally, src, json_opt);
             field_ptr.* = try list.toOwnedSlice(ally);
         },
+        .tags => @panic("TODO"),
+        .external_docs => @panic("TODO"),
     }
 }
+
+pub const Tags = struct {
+    set: Set = .{},
+
+    pub const Set = std.ArrayHashMapUnmanaged(
+        Tag,
+        void,
+        Tag.ArrayHashCtx,
+        true,
+    );
+
+    pub fn deinit(tags: *Tags, allocator: std.mem.Allocator) void {
+        for (tags.set.keys()) |*tag|
+            tag.deinit(allocator);
+        tags.set.deinit(allocator);
+    }
+
+    pub fn jsonStringify(
+        tags: Tags,
+        options: std.json.StringifyOptions,
+        writer: anytype,
+    ) @TypeOf(writer).Error!void {
+        try std.json.stringify(@as([]const Tag, tags.set.values()), options, writer);
+    }
+
+    pub fn jsonParseRealloc(
+        result: *Paths,
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!void {
+        _ = options;
+        _ = allocator;
+        _ = result;
+    }
+};
 
 test Schema {
     const src = @embedFile("SpaceTraders.json")

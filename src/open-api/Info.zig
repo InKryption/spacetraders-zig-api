@@ -43,7 +43,8 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    try schema_tools.jsonParseInPlaceTemplate(Info, result, allocator, source, options, Info.parseFieldValue);
+    var field_set = schema_tools.FieldEnumSet(Info).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(Info, result, allocator, source, options, &field_set, Info.parseFieldValue);
 }
 
 pub inline fn parseFieldValue(
@@ -114,7 +115,16 @@ pub const Contact = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        try schema_tools.jsonParseInPlaceTemplate(Contact, result, allocator, source, options, Contact.parseFieldValue);
+        var field_set = schema_tools.FieldEnumSet(Contact).initEmpty();
+        try schema_tools.jsonParseInPlaceTemplate(
+            Contact,
+            result,
+            allocator,
+            source,
+            options,
+            &field_set,
+            Contact.parseFieldValue,
+        );
     }
 
     pub inline fn parseFieldValue(
@@ -163,7 +173,16 @@ pub const License = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        try schema_tools.jsonParseInPlaceTemplate(License, result, allocator, source, options, License.parseFieldValue);
+        var field_set = schema_tools.FieldEnumSet(License).initEmpty();
+        try schema_tools.jsonParseInPlaceTemplate(
+            License,
+            result,
+            allocator,
+            source,
+            options,
+            &field_set,
+            License.parseFieldValue,
+        );
     }
 
     pub inline fn parseFieldValue(

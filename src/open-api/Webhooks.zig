@@ -3,36 +3,55 @@ const assert = std.debug.assert;
 
 const util = @import("util");
 
-const Paths = @This();
+const schema_tools = @import("schema-tools.zig");
+const PathItem = @import("Paths.zig").Item;
+const Reference = @import("Reference.zig");
+
+const Webhooks = @This();
 fields: Fields = .{},
 
-pub const Item = @import("paths/Item.zig");
 pub const Fields = std.ArrayHashMapUnmanaged(
     []const u8,
-    Item,
+    // technically the value is defined as being `Path Item Object | Reference Object`,
+    // but the former is already a superset of the latter, so just use that here
+    PathItem,
     std.array_hash_map.StringContext,
     true,
 );
 
-pub fn deinit(paths: *Paths, allocator: std.mem.Allocator) void {
-    for (paths.fields.keys(), paths.fields.values()) |path, *item| {
-        allocator.free(path);
-        item.deinit(allocator);
+comptime {
+    const JsonToZigFnm = schema_tools.JsonToZigFieldNameMap;
+    const PathItemJsonToZig = JsonToZigFnm(PathItem, PathItem.json_field_names);
+    const ReferenceJsonToZig = JsonToZigFnm(Reference, Reference.json_field_names);
+
+    for (@typeInfo(ReferenceJsonToZig).Struct.fields) |ref_field| {
+        if (!@hasField(PathItemJsonToZig, ref_field.name)) @compileError( //
+            @typeName(PathItem) ++ " was expected to be a strict superset of " ++
+            @typeName(Reference) ++ ", but is missing field " ++ ref_field.name //
+        );
     }
-    paths.fields.deinit(allocator);
+}
+
+pub fn deinit(wh: *Webhooks, allocator: std.mem.Allocator) void {
+    var iter = wh.fields.iterator();
+    while (iter.next()) |entry| {
+        allocator.free(entry.key_ptr.*);
+        entry.value_ptr.deinit(allocator);
+    }
+    wh.fields.deinit(allocator);
 }
 
 pub fn jsonStringify(
-    paths: Paths,
+    wh: Webhooks,
     options: std.json.StringifyOptions,
     writer: anytype,
 ) @TypeOf(writer).Error!void {
-    var iter = util.json.arrayHashMapStringifyObjectIterator(paths.fields);
+    var iter = util.json.arrayHashMapStringifyObjectIterator(wh.fields);
     try util.json.stringifyObject(&iter, options, writer);
 }
 
 pub fn jsonParseRealloc(
-    result: *Paths,
+    result: *Webhooks,
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,

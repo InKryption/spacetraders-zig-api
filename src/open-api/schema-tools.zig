@@ -143,6 +143,7 @@ pub fn jsonParseInPlaceTemplate(
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
+    field_set: *FieldEnumSet(T),
     /// The type that is effectively expected is:
     /// ```zig
     /// fn (
@@ -161,7 +162,7 @@ pub fn jsonParseInPlaceTemplate(
 
     const JsonFieldName = std.meta.FieldEnum(@TypeOf(json_field_name_map_reverse));
     const FieldName = std.meta.FieldEnum(T);
-    var field_set = FieldEnumSet(T).initEmpty();
+    field_set.* = FieldEnumSet(T).initEmpty();
 
     const required_fields: std.EnumSet(FieldName) = T.json_required_fields;
 
@@ -205,7 +206,7 @@ pub fn jsonParseInPlaceTemplate(
         }
     }
 
-    if (!required_fields.subsetOf(field_set)) {
+    if (!required_fields.subsetOf(field_set.*)) {
         return error.MissingField;
     }
 
