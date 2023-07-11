@@ -134,7 +134,7 @@ fn localTesting(
     test_api_step.dependOn(&run_test_api.step);
 
     const test_openapi = b.addTest(Build.TestOptions{
-        .root_source_file = Build.FileSource.relative("src/open-api/Schema.zig"),
+        .root_source_file = Build.FileSource.relative("src/open-api/OpenAPI.zig"),
         .target = target,
         .optimize = optimize,
     });

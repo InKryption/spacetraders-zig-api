@@ -15,9 +15,11 @@ pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Tag){
 };
 
 pub fn deinit(tags: *Tag, allocator: std.mem.Allocator) void {
-    for (tags.set.keys()) |str|
-        allocator.free(str);
-    tags.set.deinit(allocator);
+    allocator.free(tags.name);
+    allocator.free(tags.description orelse "");
+    if (tags.external_docs) |*docs| {
+        docs.deinit(allocator);
+    }
 }
 
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(

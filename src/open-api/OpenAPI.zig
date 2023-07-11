@@ -1,8 +1,11 @@
 //! OpenAPI Specification Version 3.1.0
 const std = @import("std");
+const assert = std.debug.assert;
+
 const util = @import("util");
 
 const schema_tools = @import("schema-tools.zig");
+pub const Components = @import("Components.zig");
 pub const Info = @import("Info.zig");
 pub const Paths = @import("Paths.zig");
 pub const Server = @import("Server.zig");
@@ -13,25 +16,25 @@ pub const SecurityRequirement = @import("SecurityRequirement.zig");
 pub const Tag = @import("Tag.zig");
 pub const ExternalDocs = @import("ExternalDocs.zig");
 
-const Schema = @This();
+const OpenAPI = @This();
 openapi: []const u8 = "",
 info: Info = .{},
 json_schema_dialect: ?[]const u8 = null,
 servers: ?[]const Server = null,
 paths: ?Paths = null,
 webhooks: ?Webhooks = null,
-// components: ?Components = null,
+components: ?Components = null,
 security: ?[]const SecurityRequirement = null,
-tags: ?[]const Tag = null,
+tags: ?Tags = null,
 external_docs: ?ExternalDocs = null,
 
-pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Schema, .{});
-pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Schema){
+pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(OpenAPI, .{});
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(OpenAPI){
     .json_schema_dialect = "jsonSchemaDialect",
     .external_docs = "externalDocs",
 };
 
-pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
+pub fn deinit(self: OpenAPI, allocator: std.mem.Allocator) void {
     allocator.free(self.openapi);
     self.info.deinit(allocator);
     allocator.free(self.json_schema_dialect orelse "");
@@ -45,47 +48,54 @@ pub fn deinit(self: Schema, allocator: std.mem.Allocator) void {
         var copy = paths;
         copy.deinit(allocator);
     }
-
+    if (self.components) |components| {
+        var copy = components;
+        copy.deinit(allocator);
+    }
     if (self.security) |security| {
         for (@constCast(security)) |*secreq| {
             secreq.deinit(allocator);
         }
         allocator.free(security);
     }
+    if (self.tags) |tags| {
+        var copy = tags;
+        copy.deinit(allocator);
+    }
 }
 
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Schema,
-    Schema.json_field_names,
+    OpenAPI,
+    OpenAPI.json_field_names,
 );
 
-pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Schema {
-    var result: Schema = .{};
+pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !OpenAPI {
+    var result: OpenAPI = .{};
     errdefer result.deinit(allocator);
     try jsonParseRealloc(&result, allocator, source, options);
     return result;
 }
 
 pub fn jsonParseRealloc(
-    result: *Schema,
+    result: *OpenAPI,
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    var field_set = schema_tools.FieldEnumSet(Schema).initEmpty();
+    var field_set = schema_tools.FieldEnumSet(OpenAPI).initEmpty();
     try schema_tools.jsonParseInPlaceTemplate(
-        Schema,
+        OpenAPI,
         result,
         allocator,
         source,
         options,
         &field_set,
-        Schema.parseFieldValue,
+        OpenAPI.parseFieldValue,
     );
 }
 
 pub inline fn parseFieldValue(
-    comptime field_tag: std.meta.FieldEnum(Schema),
+    comptime field_tag: std.meta.FieldEnum(OpenAPI),
     field_ptr: anytype,
     is_new: bool,
     ally: std.mem.Allocator,
@@ -126,7 +136,12 @@ pub inline fn parseFieldValue(
             }
             try Webhooks.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
         },
-
+        .components => {
+            if (field_ptr.* == null) {
+                field_ptr.* = .{};
+            }
+            try Components.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+        },
         .security => {
             var list = std.ArrayListUnmanaged(SecurityRequirement).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
             defer {
@@ -138,7 +153,13 @@ pub inline fn parseFieldValue(
             try schema_tools.jsonParseInPlaceArrayListTemplate(SecurityRequirement, &list, ally, src, json_opt);
             field_ptr.* = try list.toOwnedSlice(ally);
         },
-        .tags => @panic("TODO"),
+        .tags => {
+            var tags: Tags = field_ptr.* orelse Tags{};
+            errdefer tags.deinit(ally);
+            field_ptr.* = null;
+            try tags.jsonParseRealloc(ally, src, json_opt);
+            field_ptr.* = tags;
+        },
         .external_docs => @panic("TODO"),
     }
 }
@@ -164,22 +185,51 @@ pub const Tags = struct {
         options: std.json.StringifyOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
-        try std.json.stringify(@as([]const Tag, tags.set.values()), options, writer);
+        try std.json.stringify(@as([]const Tag, tags.set.keys()), options, writer);
     }
 
     pub fn jsonParseRealloc(
-        result: *Paths,
+        result: *Tags,
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        _ = options;
-        _ = allocator;
-        _ = result;
+        var old_set = result.set.move();
+        defer for (old_set.keys()) |*tag| {
+            tag.deinit(allocator);
+        } else old_set.deinit(allocator);
+
+        var new_set = Set{};
+        defer for (new_set.keys()) |*tag| {
+            tag.deinit(allocator);
+        } else new_set.deinit(allocator);
+        try new_set.ensureUnusedCapacity(allocator, old_set.count());
+
+        if (try source.next() != .array_begin) {
+            return error.UnexpectedToken;
+        }
+
+        while (true) {
+            switch (try source.peekNextTokenType()) {
+                .array_end => {
+                    assert(try source.next() == .array_end);
+                    break;
+                },
+                else => {},
+            }
+
+            try new_set.ensureUnusedCapacity(allocator, 1);
+            var tag: Tag = if (old_set.popOrNull()) |old| old.key else Tag{};
+            errdefer tag.deinit(allocator);
+            try tag.jsonParseRealloc(allocator, source, options);
+            new_set.putAssumeCapacity(tag, {});
+        }
+
+        result.set = new_set.move();
     }
 };
 
-test Schema {
+test OpenAPI {
     const src = @embedFile("SpaceTraders.json")
     // \\{
     // \\    "openapi": "3.0.0",
@@ -199,12 +249,12 @@ test Schema {
 
     var diag = std.json.Diagnostics{};
     scanner.enableDiagnostics(&diag);
-    const openapi_json: Schema = std.json.parseFromTokenSourceLeaky(
-        Schema,
+    const openapi_json: OpenAPI = std.json.parseFromTokenSourceLeaky(
+        OpenAPI,
         std.testing.allocator,
         &scanner,
         std.json.ParseOptions{
-            .ignore_unknown_fields = false,
+            .ignore_unknown_fields = true,
         },
     ) catch |err| {
         const start = std.mem.lastIndexOfScalar(u8, src[0 .. std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n') orelse 0], '\n') orelse 0;

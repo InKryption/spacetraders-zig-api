@@ -82,6 +82,49 @@ fn GenerateJsonStringifyStructWithoutNullsFnImpl(
     };
 }
 
+pub fn ZigToJsonFieldNameMap(comptime T: type) type {
+    const info = @typeInfo(T).Struct;
+    var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
+    for (&fields, info.fields) |*field, ref| {
+        field.* = .{
+            .name = ref.name,
+            .type = []const u8,
+            .default_value = @ptrCast(&@as([]const u8, ref.name)),
+            .is_comptime = false,
+            .alignment = 0,
+        };
+    }
+    return @Type(.{ .Struct = std.builtin.Type.Struct{
+        .layout = .Auto,
+        .is_tuple = false,
+        .backing_integer = null,
+        .decls = &.{},
+        .fields = &fields,
+    } });
+}
+
+pub fn JsonToZigFieldNameMap(
+    comptime T: type,
+    comptime map: ZigToJsonFieldNameMap(T),
+) type {
+    const info = @typeInfo(@TypeOf(map)).Struct;
+    var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
+    for (&fields, info.fields) |*field, ref| field.* = .{
+        .name = @field(map, ref.name),
+        .type = []const u8,
+        .default_value = @ptrCast(&ref.name),
+        .is_comptime = true,
+        .alignment = 0,
+    };
+    return @Type(.{ .Struct = std.builtin.Type.Struct{
+        .layout = .Auto,
+        .is_tuple = false,
+        .backing_integer = null,
+        .decls = &.{},
+        .fields = &fields,
+    } });
+}
+
 pub fn jsonParseReallocString(
     str: *std.ArrayList(u8),
     source: anytype,
@@ -135,6 +178,80 @@ pub fn jsonParseInPlaceArrayListTemplate(
         }
         results.shrinkRetainingCapacity(overwritten_count);
     }
+}
+
+pub fn jsonParseInPlaceArrayHashMapTemplate(
+    comptime V: type,
+    hm: *std.json.ArrayHashMap(V),
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
+) !void {
+    if (try source.next() != .object_begin) {
+        return error.UnexpectedToken;
+    }
+
+    var old_fields = hm.map.move();
+    defer for (old_fields.keys(), old_fields.values()) |key, *value| {
+        allocator.free(key);
+        value.deinit(allocator);
+    } else old_fields.deinit(allocator);
+
+    var new_fields = std.StringArrayHashMapUnmanaged(V){};
+    defer for (new_fields.keys(), new_fields.values()) |key, *value| {
+        allocator.free(key);
+        value.deinit(allocator);
+    } else new_fields.deinit(allocator);
+    try new_fields.ensureUnusedCapacity(allocator, old_fields.count());
+
+    var key_buffer = std.ArrayList(u8).init(allocator);
+    defer key_buffer.deinit();
+
+    while (true) {
+        switch (try source.peekNextTokenType()) {
+            else => unreachable,
+            .object_end => {
+                _ = try source.next();
+                break;
+            },
+            .string => {},
+        }
+
+        key_buffer.clearRetainingCapacity();
+        const new_key: []const u8 = (try source.allocNextIntoArrayListMax(
+            &key_buffer,
+            .alloc_if_needed,
+            options.max_value_len orelse std.json.default_max_value_len,
+        )) orelse key_buffer.items;
+
+        const gop = try new_fields.getOrPut(allocator, new_key);
+
+        {
+            gop.value_ptr.* = .{};
+            errdefer assert(new_fields.orderedRemove(new_key));
+
+            if (gop.found_existing) {
+                assert(!old_fields.contains(new_key));
+                switch (options.duplicate_field_behavior) {
+                    .@"error" => return error.DuplicateField,
+                    .use_first => {
+                        try source.skipValue();
+                        continue;
+                    },
+                    .use_last => {},
+                }
+            } else if (old_fields.fetchSwapRemove(new_key)) |old| {
+                gop.key_ptr.* = old.key;
+                gop.value_ptr.* = old.value;
+            } else {
+                gop.key_ptr.* = try allocator.dupe(u8, new_key);
+            }
+
+            try gop.value_ptr.jsonParseRealloc(allocator, source, options);
+        }
+    }
+
+    hm.map = new_fields.move();
 }
 
 pub fn jsonParseInPlaceTemplate(
@@ -222,45 +339,47 @@ pub fn jsonParseInPlaceTemplate(
     }
 }
 
-pub fn ZigToJsonFieldNameMap(comptime T: type) type {
-    const info = @typeInfo(T).Struct;
-    var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
-    for (&fields, info.fields) |*field, ref| {
-        field.* = .{
-            .name = ref.name,
-            .type = []const u8,
-            .default_value = @ptrCast(&@as([]const u8, ref.name)),
-            .is_comptime = false,
-            .alignment = 0,
-        };
+pub fn stringifyArrayHashMap(
+    comptime V: type,
+    hm: *const std.json.ArrayHashMap(V),
+    writer: anytype,
+    options: std.json.StringifyOptions,
+) !void {
+    try writer.writeByte('{');
+    var field_output = false;
+    var child_options = options;
+    child_options.whitespace.indent_level += 1;
+
+    var iter = hm.map.iterator();
+    while (iter.next()) |entry| {
+        if (field_output) {
+            try writer.writeByte(',');
+        } else field_output = true;
+        try child_options.whitespace.outputIndent(writer);
+
+        try std.json.stringify(entry.key_ptr.*, options, writer);
+        try writer.writeByte(':');
+        if (child_options.whitespace.separator) {
+            try writer.writeByte(' ');
+        }
+        try std.json.stringify(entry.value_ptr.*, child_options, writer);
     }
-    return @Type(.{ .Struct = std.builtin.Type.Struct{
-        .layout = .Auto,
-        .is_tuple = false,
-        .backing_integer = null,
-        .decls = &.{},
-        .fields = &fields,
-    } });
+
+    if (field_output) {
+        try options.whitespace.outputIndent(writer);
+    }
+    try writer.writeByte('}');
 }
 
-pub fn JsonToZigFieldNameMap(
-    comptime T: type,
-    comptime map: ZigToJsonFieldNameMap(T),
-) type {
-    const info = @typeInfo(@TypeOf(map)).Struct;
-    var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
-    for (&fields, info.fields) |*field, ref| field.* = .{
-        .name = @field(map, ref.name),
-        .type = []const u8,
-        .default_value = @ptrCast(&ref.name),
-        .is_comptime = true,
-        .alignment = 0,
-    };
-    return @Type(.{ .Struct = std.builtin.Type.Struct{
-        .layout = .Auto,
-        .is_tuple = false,
-        .backing_integer = null,
-        .decls = &.{},
-        .fields = &fields,
-    } });
+/// frees all the keys, deinitialises all the values, and then deinitialises the map
+pub fn deinitArrayHashMap(
+    allocator: std.mem.Allocator,
+    comptime V: type,
+    hm: *std.json.ArrayHashMap(V),
+) void {
+    for (hm.map.keys(), hm.map.values()) |key, *value| {
+        allocator.free(key);
+        value.deinit(allocator);
+    }
+    hm.deinit(allocator);
 }
