@@ -11,6 +11,8 @@ pub const ParameterOrRef = union(enum) {
     parameter: Parameter,
     reference: Reference,
 
+    pub const empty = ParameterOrRef{ .reference = .{} };
+
     pub fn deinit(param: *ParameterOrRef, allocator: std.mem.Allocator) void {
         switch (param.*) {
             inline else => |*ptr| ptr.deinit(allocator),

@@ -83,9 +83,9 @@ fn GenerateJsonStringifyStructWithoutNullsFnImpl(
 }
 
 pub fn ZigToJsonFieldNameMap(comptime T: type) type {
-    const info = @typeInfo(T).Struct;
-    var fields = [_]std.builtin.Type.StructField{undefined} ** info.fields.len;
-    for (&fields, info.fields) |*field, ref| {
+    const field_infos = std.meta.fields(T);
+    var fields = [_]std.builtin.Type.StructField{undefined} ** field_infos.len;
+    for (&fields, field_infos) |*field, ref| {
         field.* = .{
             .name = ref.name,
             .type = []const u8,

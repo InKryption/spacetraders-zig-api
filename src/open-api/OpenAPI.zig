@@ -273,10 +273,35 @@ test OpenAPI {
             .ignore_unknown_fields = false,
         },
     ) catch |err| {
-        const start = std.mem.lastIndexOfScalar(u8, src[0 .. std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n') orelse 0], '\n') orelse 0;
-        const end = std.mem.indexOfScalarPos(u8, src[0..], diag.getByteOffset(), '\n') orelse src.len;
+        const start = if (std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n')) |idx| idx + 1 else 0;
+        const end = std.mem.indexOfScalarPos(u8, src, diag.getByteOffset(), '\n') orelse src.len;
+        const cursor = struct {
+            col: u64,
+            pub fn format(
+                cursor: @This(),
+                comptime fmt_str: []const u8,
+                options: std.fmt.FormatOptions,
+                writer: anytype,
+            ) !void {
+                _ = options;
+                _ = fmt_str;
+                try writer.writeByteNTimes('~', cursor.col - 1);
+                try writer.writeByte('^');
+            }
+        }{ .col = diag.getColumn() };
 
-        std.log.err("{s} at {d}:{d}:\n{s}", .{ @errorName(err), diag.getLine(), diag.getColumn(), src[start..end] });
+        std.log.err("{[err]s} at {[line]d}:{[col]d}:" ++
+            \\```
+            \\{[snippet]s}
+            \\{[cursor]}
+            \\```
+        , .{
+            .err = @errorName(err),
+            .line = diag.getLine(),
+            .col = diag.getColumn(),
+            .snippet = src[start..end],
+            .cursor = cursor,
+        });
         return err;
     };
     defer openapi_json.deinit(std.testing.allocator);

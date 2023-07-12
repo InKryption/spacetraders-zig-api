@@ -3,19 +3,20 @@ const assert = std.debug.assert;
 
 const schema_tools = @import("schema-tools.zig");
 const PathItem = @import("PathItem.zig");
+const Schema = @import("Schema.zig");
 const RequestBodyOrRef = @import("request_body_or_ref.zig").RequestBodyOrRef;
+const SecuritySchemeOrRef = @import("security_scheme_or_ref.zig").SecuritySchemeOrRef;
 
 const Components = @This();
-// schemas           Map[string, Schema Object]                               An object to hold reusable Schema Objects.
+schemas: ?std.json.ArrayHashMap(Schema) = null,
 // responses         Map[string, Response Object | Reference Object]          An object to hold reusable Response Objects.
 // parameters        Map[string, Parameter Object | Reference Object]         An object to hold reusable Parameter Objects.
 // examples          Map[string, Example Object | Reference Object]           An object to hold reusable Example Objects.
 // requestBodies     Map[string, Request Body Object | Reference Object]      An object to hold reusable Request Body Objects.
-
 request_bodies: ?std.json.ArrayHashMap(RequestBodyOrRef) = null,
-
 // headers           Map[string, Header Object | Reference Object]            An object to hold reusable Header Objects.
 // securitySchemes   Map[string, Security Scheme Object | Reference Object]   An object to hold reusable Security Scheme Objects.
+security_schemes: ?std.json.ArrayHashMap(SecuritySchemeOrRef) = null,
 // links             Map[string, Link Object | Reference Object]              An object to hold reusable Link Objects.
 // callbacks         Map[string, Callback Object | Reference Object]          An object to hold reusable Callback Objects.
 // Map[string, Path Item Object | Reference Object]         An object to hold reusable Path Item Object.
@@ -27,6 +28,7 @@ pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(C
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Components){
     .path_items = "pathItems",
     .request_bodies = "requestBodies",
+    .security_schemes = "securitySchemes",
 };
 
 pub fn deinit(components: *Components, allocator: std.mem.Allocator) void {
@@ -50,23 +52,36 @@ pub fn jsonParseRealloc(
 }
 pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(Components),
-    field_ptr: anytype,
+    field_ptr: *std.meta.FieldType(Components, field_tag),
     is_new: bool,
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
 ) !void {
-    _ = field_ptr;
     _ = is_new;
-    _ = allocator;
-    _ = source;
-    _ = options;
     switch (field_tag) {
-        .request_bodies => {
-            @panic("TODO");
-        },
-        .path_items => {
-            @panic("TODO");
+        .schemas,
+        .request_bodies,
+        .path_items,
+        .security_schemes,
+        => {
+            const T = switch (field_tag) {
+                .schemas => Schema,
+                .request_bodies => RequestBodyOrRef,
+                .path_items => PathItem,
+                .security_schemes => SecuritySchemeOrRef,
+            };
+            if (field_ptr.* == null) {
+                field_ptr.* = .{};
+            }
+            try schema_tools.jsonParseInPlaceArrayHashMapTemplate(
+                T,
+                &field_ptr.*.?,
+                allocator,
+                source,
+                options,
+                schema_tools.ParseArrayHashMapInPlaceObjCtx(T),
+            );
         },
     }
 }

@@ -1,36 +1,33 @@
 const std = @import("std");
-const assert = std.debug.assert;
-
-const util = @import("util");
 
 const schema_tools = @import("schema-tools.zig");
-const RequestBody = @import("RequestBody.zig");
+const SecurityScheme = @import("SecurityScheme.zig");
 const Reference = @import("Reference.zig");
 
-pub const RequestBodyOrRef = union(enum) {
-    request_body: RequestBody,
+pub const SecuritySchemeOrRef = union(enum) {
+    security_scheme: SecurityScheme,
     reference: Reference,
 
-    pub const empty = RequestBodyOrRef{ .reference = .{} };
+    pub const empty = SecuritySchemeOrRef{ .reference = .{} };
 
-    pub fn deinit(reqbody: *RequestBodyOrRef, allocator: std.mem.Allocator) void {
-        switch (reqbody.*) {
+    pub fn deinit(param: *SecuritySchemeOrRef, allocator: std.mem.Allocator) void {
+        switch (param.*) {
             inline else => |*ptr| ptr.deinit(allocator),
         }
     }
 
     pub fn jsonStringify(
-        reqbody: RequestBodyOrRef,
+        param: SecuritySchemeOrRef,
         options: std.json.StringifyOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
-        try switch (reqbody) {
+        try switch (param) {
             inline else => |val| val.jsonStringify(options, writer),
         };
     }
 
     pub fn jsonParseRealloc(
-        result: *RequestBodyOrRef,
+        result: *SecuritySchemeOrRef,
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
