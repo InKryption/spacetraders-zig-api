@@ -9,6 +9,8 @@ name: []const u8 = "",
 description: ?[]const u8 = null,
 external_docs: ?ExternalDocs = null,
 
+pub const empty = Tag{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Tag, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Tag){
     .external_docs = "externalDocs",

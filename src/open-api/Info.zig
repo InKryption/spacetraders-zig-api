@@ -11,6 +11,8 @@ contact: ?Contact = null,
 license: ?License = null,
 version: []const u8 = "",
 
+pub const empty = Info{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Info, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Info){
     .terms_of_service = "termsOfService",
@@ -91,6 +93,8 @@ pub const Contact = struct {
     url: ?[]const u8 = null,
     email: ?[]const u8 = null,
 
+    pub const empty = Contact{};
+
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Contact, .{});
     pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Contact){};
 
@@ -148,6 +152,8 @@ pub const License = struct {
     name: []const u8 = "",
     identifier: ?[]const u8 = null,
     url: ?[]const u8 = null,
+
+    pub const empty = License{};
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(License, .{});
     pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(License){};

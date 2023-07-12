@@ -28,6 +28,8 @@ security: ?[]const SecurityRequirement = null,
 tags: ?Tags = null,
 external_docs: ?ExternalDocs = null,
 
+pub const empty = OpenAPI{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(OpenAPI, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(OpenAPI){
     .json_schema_dialect = "jsonSchemaDialect",
@@ -133,7 +135,14 @@ pub inline fn parseFieldValue(
                 .map = if (field_ptr.*) |*ptr| ptr.map.move() else .{},
             };
             defer hm.deinit(ally);
-            try schema_tools.jsonParseInPlaceArrayHashMapTemplate(PathItem, &hm, ally, src, json_opt);
+            try schema_tools.jsonParseInPlaceArrayHashMapTemplate(
+                PathItem,
+                &hm,
+                ally,
+                src,
+                json_opt,
+                schema_tools.ParseArrayHashMapInPlaceObjCtx(PathItem),
+            );
             field_ptr.* = .{ .map = hm.map.move() };
         },
         .webhooks => {

@@ -6,6 +6,8 @@ const ExternalDocs = @This();
 description: ?[]const u8 = null,
 url: []const u8 = "",
 
+pub const empty = ExternalDocs{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(ExternalDocs, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(ExternalDocs){};
 

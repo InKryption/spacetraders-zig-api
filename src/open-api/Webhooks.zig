@@ -10,6 +10,8 @@ const Reference = @import("Reference.zig");
 const Webhooks = @This();
 fields: Fields = .{},
 
+pub const empty = Webhooks{};
+
 // technically the value is defined as being `Path Item Object | Reference Object`,
 // but the former is already a superset of the latter, so just use that here
 pub const Fields = std.json.ArrayHashMap(PathItem);
@@ -51,5 +53,6 @@ pub fn jsonParseRealloc(
         allocator,
         source,
         options,
+        schema_tools.ParseArrayHashMapInPlaceObjCtx(PathItem),
     );
 }

@@ -26,6 +26,8 @@ trace: ?Operation = null,
 servers: ?[]const Server = null,
 parameters: ?[]const ParameterOrRef = null,
 
+pub const empty = PathItem{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(PathItem, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(PathItem){
     .ref = "$ref",
@@ -143,6 +145,8 @@ pub const Operation = struct {
     // deprecated     boolean                                           Declares this operation to be deprecated. Consumers SHOULD refrain from usage of the declared operation. Default value is false.
     // security       [Security Requirement Object]                     A declaration of which security mechanisms can be used for this operation. The list of values includes alternative security requirement objects that can be used. Only one of the security requirement objects need to be satisfied to authorize a request. To make security optional, an empty security requirement ({}) can be included in the array. This definition overrides any declared top-level security. To remove a top-level security declaration, an empty array can be used.
     // servers        [Server Object]                                   An alternative server array to service this operation. If an alternative server object is specified at the Path Item Object or Root level, it will be overridden by this value.
+
+    pub const empty = Operation{};
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Operation, .{});
     pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Operation){

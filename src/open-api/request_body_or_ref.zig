@@ -36,5 +36,6 @@ pub const RequestBodyOrRef = union(enum) {
         _ = options;
         _ = allocator;
         _ = result;
+        @panic("TODO");
     }
 };

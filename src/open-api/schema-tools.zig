@@ -180,12 +180,55 @@ pub fn jsonParseInPlaceArrayListTemplate(
     }
 }
 
+pub fn ParseArrayHashMapInPlaceObjCtx(comptime V: type) type {
+    return struct {
+        pub inline fn deinit(allocator: std.mem.Allocator, value: *V) void {
+            value.deinit(allocator);
+        }
+        pub inline fn empty() V {
+            return comptime V.empty;
+        }
+
+        pub inline fn jsonParseRealloc(
+            result: *V,
+            allocator: std.mem.Allocator,
+            source: anytype,
+            options: std.json.ParseOptions,
+        ) !void {
+            return V.jsonParseRealloc(result, allocator, source, options);
+        }
+    };
+}
+pub const ParseArrayHashMapInPlaceStrCtx = struct {
+    pub inline fn deinit(allocator: std.mem.Allocator, value: *[]const u8) void {
+        allocator.free(value.*);
+    }
+    pub inline fn empty() []const u8 {
+        return "";
+    }
+    pub inline fn jsonParseRealloc(
+        result: *[]const u8,
+        allocator: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) !void {
+        var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, result.*);
+        defer new_str.deinit();
+
+        result.* = "";
+        try jsonParseReallocString(&new_str, source, options);
+
+        result.* = try new_str.toOwnedSlice();
+    }
+};
+
 pub fn jsonParseInPlaceArrayHashMapTemplate(
     comptime V: type,
     hm: *std.json.ArrayHashMap(V),
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
+    comptime Ctx: type,
 ) !void {
     if (try source.next() != .object_begin) {
         return error.UnexpectedToken;
@@ -194,7 +237,7 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
     var old_fields = hm.map.move();
     defer for (old_fields.keys(), old_fields.values()) |key, *value| {
         allocator.free(key);
-        value.deinit(allocator);
+        Ctx.deinit(allocator, value);
     } else old_fields.deinit(allocator);
 
     var new_fields = std.StringArrayHashMapUnmanaged(V){};
@@ -226,40 +269,38 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
 
         const gop = try new_fields.getOrPut(allocator, new_key);
 
-        {
-            gop.value_ptr.* = .{};
-
-            if (gop.found_existing) {
-                assert(!old_fields.contains(new_key));
-                switch (options.duplicate_field_behavior) {
-                    .@"error" => return error.DuplicateField,
-                    .use_first => {
-                        try source.skipValue();
-                        continue;
-                    },
-                    .use_last => {},
-                }
-            } else if (old_fields.fetchSwapRemove(new_key)) |old| {
-                gop.key_ptr.* = old.key;
-                gop.value_ptr.* = old.value;
-            } else if (old_fields.popOrNull()) |any_old| {
-                errdefer assert(new_fields.orderedRemove(new_key));
-
-                var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(any_old.key));
-                defer new_str.deinit();
-
-                new_str.clearRetainingCapacity();
-                try jsonParseReallocString(&new_str, source, options);
-
-                gop.key_ptr.* = try new_str.toOwnedSlice();
-                gop.value_ptr.* = any_old.value;
-            } else {
-                errdefer assert(new_fields.orderedRemove(new_key));
-                gop.key_ptr.* = try allocator.dupe(u8, new_key);
+        if (gop.found_existing) {
+            assert(!old_fields.contains(new_key));
+            switch (options.duplicate_field_behavior) {
+                .@"error" => return error.DuplicateField,
+                .use_first => {
+                    try source.skipValue();
+                    continue;
+                },
+                .use_last => {},
             }
+        } else if (old_fields.fetchSwapRemove(new_key)) |old| {
+            gop.key_ptr.* = old.key;
+            gop.value_ptr.* = old.value;
+        } else if (old_fields.popOrNull()) |any_old| {
+            errdefer assert(new_fields.orderedRemove(new_key));
 
-            try gop.value_ptr.jsonParseRealloc(allocator, source, options);
+            var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(any_old.key));
+            defer new_str.deinit();
+
+            new_str.clearRetainingCapacity();
+            try jsonParseReallocString(&new_str, source, options);
+
+            gop.key_ptr.* = try new_str.toOwnedSlice();
+            gop.value_ptr.* = any_old.value;
+        } else {
+            errdefer assert(new_fields.orderedRemove(new_key));
+            gop.key_ptr.* = try allocator.dupe(u8, new_key);
+            gop.value_ptr.* = Ctx.empty();
         }
+
+        try gop.value_ptr.jsonParseRealloc(allocator, source, options);
+        try Ctx.jsonParseRealloc(gop.value_ptr, allocator, source, options);
     }
 
     hm.map = new_fields.move();
@@ -404,7 +445,7 @@ pub fn jsonParseInPlaceTemplate(
 
     // ensure that any fields that were present in the old `result` value are
     // not present in the resulting `result` value if they are not present.
-    var to_free = T{};
+    var to_free = T.empty;
     defer to_free.deinit(allocator);
     inline for (@typeInfo(T).Struct.fields) |field| cont: {
         const tag = @field(FieldName, field.name);

@@ -7,6 +7,8 @@ url: []const u8 = "",
 description: ?[]const u8 = null,
 variables: ?VariableMap = null,
 
+pub const empty = Server{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Server, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
 
@@ -69,6 +71,7 @@ pub inline fn parseFieldValue(
                 ally,
                 src,
                 json_opt,
+                schema_tools.ParseArrayHashMapInPlaceObjCtx(Variable),
             );
         },
     }

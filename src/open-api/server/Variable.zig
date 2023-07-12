@@ -7,6 +7,8 @@ enumeration: ?Enum = .{},
 default: []const u8 = "",
 description: ?[]const u8 = null,
 
+pub const empty = Variable{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Variable, .{});
 pub const json_field_names = .{
     .enumeration = "enum",

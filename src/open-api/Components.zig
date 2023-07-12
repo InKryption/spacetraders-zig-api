@@ -21,6 +21,8 @@ request_bodies: ?std.json.ArrayHashMap(RequestBodyOrRef) = null,
 // Map[string, Path Item Object | Reference Object]         An object to hold reusable Path Item Object.
 path_items: ?std.json.ArrayHashMap(PathItem) = null,
 
+pub const empty = Components{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Components, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Components){
     .path_items = "pathItems",
@@ -54,11 +56,17 @@ pub inline fn parseFieldValue(
     source: anytype,
     options: std.json.ParseOptions,
 ) !void {
-    _ = field_tag;
     _ = field_ptr;
     _ = is_new;
     _ = allocator;
     _ = source;
     _ = options;
-    @panic("TODO");
+    switch (field_tag) {
+        .request_bodies => {
+            @panic("TODO");
+        },
+        .path_items => {
+            @panic("TODO");
+        },
+    }
 }
