@@ -54,7 +54,8 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    try schema_tools.jsonParseInPlaceTemplate(Variable, result, allocator, source, options, Variable.parseFieldValue);
+    var field_set = schema_tools.FieldEnumSet(Variable).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(Variable, result, allocator, source, options, &field_set, Variable.parseFieldValue);
 }
 
 pub inline fn parseFieldValue(
@@ -65,10 +66,23 @@ pub inline fn parseFieldValue(
     src: anytype,
     json_opt: std.json.ParseOptions,
 ) !void {
-    _ = field_ptr;
-    _ = json_opt;
-    _ = src;
-    _ = ally;
     _ = is_new;
-    @panic("TODO");
+    switch (field_tag) {
+        .enumeration => {
+            var set = if (field_ptr.*) |*ptr| ptr.move() else std.StringArrayHashMapUnmanaged(void){};
+            defer schema_tools.deinitStringSet(ally, &set);
+            try schema_tools.jsonParseInPlaceStringSet(&set, ally, src, json_opt);
+            field_ptr.* = set.move();
+        },
+        .default, .description => {
+            var new_str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+            defer new_str.deinit();
+
+            new_str.clearRetainingCapacity();
+            field_ptr.* = "";
+
+            try schema_tools.jsonParseReallocString(&new_str, src, json_opt);
+            field_ptr.* = try new_str.toOwnedSlice();
+        },
+    }
 }

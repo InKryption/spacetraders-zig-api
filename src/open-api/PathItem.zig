@@ -1,11 +1,15 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const schema_tools = @import("../schema-tools.zig");
-const Server = @import("../Server.zig");
-const Reference = @import("../Reference.zig");
+const schema_tools = @import("schema-tools.zig");
+const ExternalDocs = @import("ExternalDocs.zig");
+const Server = @import("Server.zig");
+const Reference = @import("Reference.zig");
+const RequestBody = @import("RequestBody.zig");
+const Parameter = @import("Parameter.zig");
+const RequestBodyOrRef = @import("request_body_or_ref.zig").RequestBodyOrRef;
 
-const Item = @This();
+const PathItem = @This();
 ref: ?[]const u8 = null,
 summary: ?[]const u8 = null,
 description: ?[]const u8 = null,
@@ -20,21 +24,21 @@ patch: ?Operation = null,
 trace: ?Operation = null,
 
 servers: ?[]const Server = null,
-parameters: ?[]const Param = null,
+parameters: ?[]const ParameterOrRef = null,
 
-pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Item, .{});
-pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Item){
+pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(PathItem, .{});
+pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(PathItem){
     .ref = "$ref",
 };
 
-pub const Param = @import("param.zig").Param;
+pub const ParameterOrRef = @import("parameter_or_ref.zig").ParameterOrRef;
 
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Item,
-    Item.json_field_names,
+    PathItem,
+    PathItem.json_field_names,
 );
 
-pub fn deinit(item: *Item, allocator: std.mem.Allocator) void {
+pub fn deinit(item: *PathItem, allocator: std.mem.Allocator) void {
     allocator.free(item.ref orelse "");
     allocator.free(item.summary orelse "");
     allocator.free(item.description orelse "");
@@ -60,26 +64,26 @@ pub fn deinit(item: *Item, allocator: std.mem.Allocator) void {
 }
 
 pub fn jsonParseRealloc(
-    result: *Item,
+    result: *PathItem,
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
-    var field_set = schema_tools.FieldEnumSet(Item).initEmpty();
+    var field_set = schema_tools.FieldEnumSet(PathItem).initEmpty();
     try schema_tools.jsonParseInPlaceTemplate(
-        Item,
+        PathItem,
         result,
         allocator,
         source,
         options,
         &field_set,
-        Item.parseFieldValue,
+        PathItem.parseFieldValue,
     );
 }
 
 pub inline fn parseFieldValue(
-    comptime field_tag: std.meta.FieldEnum(Item),
-    field_ptr: *std.meta.FieldType(Item, field_tag),
+    comptime field_tag: std.meta.FieldEnum(PathItem),
+    field_ptr: *std.meta.FieldType(PathItem, field_tag),
     is_new: bool,
     ally: std.mem.Allocator,
     src: anytype,
@@ -130,10 +134,10 @@ pub const Operation = struct {
     tags: ?[]const []const u8 = null,
     summary: ?[]const u8 = null,
     description: ?[]const u8 = null,
-    // externalDocs   External Documentation Object                     Additional external documentation for this operation.
-    // operationId    string                                            Unique string used to identify the operation. The id MUST be unique among all operations described in the API. The operationId value is case-sensitive. Tools and libraries MAY use the operationId to uniquely identify an operation, therefore, it is RECOMMENDED to follow common programming naming conventions.
-    // parameters     [Parameter Object | Reference Object]             A list of parameters that are applicable for this operation. If a parameter is already defined at the Path Item, the new definition will override it but can never remove it. The list MUST NOT include duplicated parameters. A unique parameter is defined by a combination of a name and location. The list can use the Reference Object to link to parameters that are defined at the OpenAPI Object’s components/parameters.
-    // requestBody    Request Body Object | Reference Object            The request body applicable for this operation. The requestBody is fully supported in HTTP methods where the HTTP 1.1 specification [RFC7231] has explicitly defined semantics for request bodies. In other cases where the HTTP spec is vague (such as GET, HEAD and DELETE), requestBody is permitted but does not have well-defined semantics and SHOULD be avoided if possible.
+    external_docs: ?ExternalDocs = null,
+    operation_id: ?[]const u8 = null,
+    parameters: ?[]const ParameterOrRef = null,
+    request_body: ?RequestBodyOrRef = null,
     // responses      Responses Object                                  The list of possible responses as they are returned from executing this operation.
     // callbacks      Map[string, Callback Object | Reference Object]   A map of possible out-of band callbacks related to the parent operation. The key is a unique identifier for the Callback Object. Each value in the map is a Callback Object that describes a request that may be initiated by the API provider and the expected responses.
     // deprecated     boolean                                           Declares this operation to be deprecated. Consumers SHOULD refrain from usage of the declared operation. Default value is false.
@@ -141,7 +145,11 @@ pub const Operation = struct {
     // servers        [Server Object]                                   An alternative server array to service this operation. If an alternative server object is specified at the Path Item Object or Root level, it will be overridden by this value.
 
     pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Operation, .{});
-    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Operation){};
+    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Operation){
+        .external_docs = "externalDocs",
+        .operation_id = "operationId",
+        .request_body = "requestBody",
+    };
 
     pub fn deinit(op: *Operation, allocator: std.mem.Allocator) void {
         if (op.tags) |tags| {
@@ -150,6 +158,16 @@ pub const Operation = struct {
         }
         allocator.free(op.summary orelse "");
         allocator.free(op.description orelse "");
+        if (op.external_docs) |*docs| {
+            docs.deinit(allocator);
+        }
+        allocator.free(op.operation_id orelse "");
+        if (op.parameters) |parameters| {
+            for (@constCast(parameters)) |*parameter| {
+                parameter.deinit(allocator);
+            }
+            allocator.free(parameters);
+        }
     }
 
     pub fn jsonParseRealloc(
@@ -233,7 +251,7 @@ pub const Operation = struct {
 
                 field_ptr.* = try list.toOwnedSlice();
             },
-            .summary, .description => {
+            .summary, .description, .operation_id => {
                 var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(field_ptr.* orelse ""));
                 defer str.deinit();
                 str.clearRetainingCapacity();
@@ -241,13 +259,40 @@ pub const Operation = struct {
                 try schema_tools.jsonParseReallocString(&str, src, json_opt);
                 field_ptr.* = try str.toOwnedSlice();
             },
+            .external_docs => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = .{};
+                }
+                try ExternalDocs.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            },
+            .parameters => {
+                var list = std.ArrayListUnmanaged(ParameterOrRef).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
+                defer list.deinit(ally);
+
+                field_ptr.* = null;
+                try schema_tools.jsonParseInPlaceArrayListTemplate(
+                    ParameterOrRef,
+                    &list,
+                    ally,
+                    src,
+                    json_opt,
+                );
+
+                field_ptr.* = try list.toOwnedSlice(ally);
+            },
+            .request_body => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = .{ .reference = .{} };
+                }
+                try RequestBodyOrRef.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            },
         }
     }
 };
 
-pub fn asReference(item: Item) ?Reference {
+pub fn asReference(item: PathItem) ?Reference {
     const ref = item.ref orelse return null;
-    inline for (@typeInfo(Item).Struct.fields) |field| {
+    inline for (@typeInfo(PathItem).Struct.fields) |field| {
         if (@hasField(Reference, field.name)) continue;
         assert(@field(item, field.name) == null);
     }

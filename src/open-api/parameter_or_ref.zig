@@ -3,22 +3,22 @@ const assert = std.debug.assert;
 
 const util = @import("util");
 
-const Parameter = @import("../Parameter.zig");
-const Reference = @import("../Reference.zig");
-const schema_tools = @import("../schema-tools.zig");
+const schema_tools = @import("schema-tools.zig");
+const Parameter = @import("Parameter.zig");
+const Reference = @import("Reference.zig");
 
-pub const Param = union(enum) {
+pub const ParameterOrRef = union(enum) {
     parameter: Parameter,
     reference: Reference,
 
-    pub fn deinit(param: *Param, allocator: std.mem.Allocator) void {
+    pub fn deinit(param: *ParameterOrRef, allocator: std.mem.Allocator) void {
         switch (param.*) {
             inline else => |*ptr| ptr.deinit(allocator),
         }
     }
 
     pub fn jsonStringify(
-        param: Param,
+        param: ParameterOrRef,
         options: std.json.StringifyOptions,
         writer: anytype,
     ) @TypeOf(writer).Error!void {
@@ -31,20 +31,20 @@ pub const Param = union(enum) {
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
-    ) !Param {
-        var result: Param = .{ .reference = .{} };
+    ) !ParameterOrRef {
+        var result: ParameterOrRef = .{ .reference = .{} };
         errdefer result.deinit(allocator);
         try result.jsonParseRealloc(allocator, source, options);
         return result;
     }
 
     pub fn jsonParseRealloc(
-        result: *Param,
+        result: *ParameterOrRef,
         allocator: std.mem.Allocator,
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        const Resolution = @typeInfo(Param).Union.tag_type.?;
+        const Resolution = @typeInfo(ParameterOrRef).Union.tag_type.?;
         var resolution: ?Resolution = null;
 
         var shared: struct {
@@ -128,7 +128,7 @@ pub const Param = union(enum) {
                 if (result.* != field_res) {
                     result.deinit(allocator);
                     result.* = switch (field_res) {
-                        inline else => |tag| @unionInit(Param, @tagName(tag), .{}),
+                        inline else => |tag| @unionInit(ParameterOrRef, @tagName(tag), .{}),
                     };
                 }
                 resolution = field_res;
@@ -142,7 +142,7 @@ pub const Param = union(enum) {
                 .reference,
                 => |res_tag| switch (json_field_match) {
                     inline else => |tag| {
-                        const T = std.meta.FieldType(Param, res_tag);
+                        const T = std.meta.FieldType(ParameterOrRef, res_tag);
                         const ZigFieldNames = JsonToZigFNM(T, T.json_field_names);
                         if (!@hasField(ZigFieldNames, @tagName(tag))) {
                             unreachable;
@@ -166,7 +166,7 @@ pub const Param = union(enum) {
 
         switch (result.*) {
             inline else => |*ptr, res_tag| {
-                const T = std.meta.FieldType(Param, res_tag);
+                const T = std.meta.FieldType(ParameterOrRef, res_tag);
                 const zig_fields = schema_tools.JsonToZigFieldNameMap(T, T.json_field_names){};
                 inline for (@typeInfo(@TypeOf(shared)).Struct.fields) |field| {
                     const zig_field = @field(zig_fields, field.name);

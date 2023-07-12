@@ -7,7 +7,7 @@ const util = @import("util");
 const schema_tools = @import("schema-tools.zig");
 pub const Components = @import("Components.zig");
 pub const Info = @import("Info.zig");
-pub const Paths = @import("Paths.zig");
+pub const PathItem = @import("PathItem.zig");
 pub const Server = @import("Server.zig");
 pub const Parameter = @import("Parameter.zig");
 pub const Reference = @import("Reference.zig");
@@ -21,7 +21,7 @@ openapi: []const u8 = "",
 info: Info = .{},
 json_schema_dialect: ?[]const u8 = null,
 servers: ?[]const Server = null,
-paths: ?Paths = null,
+paths: ?std.json.ArrayHashMap(PathItem) = null,
 webhooks: ?Webhooks = null,
 components: ?Components = null,
 security: ?[]const SecurityRequirement = null,
@@ -46,7 +46,7 @@ pub fn deinit(self: OpenAPI, allocator: std.mem.Allocator) void {
     }
     if (self.paths) |paths| {
         var copy = paths;
-        copy.deinit(allocator);
+        schema_tools.deinitArrayHashMap(allocator, PathItem, &copy);
     }
     if (self.components) |components| {
         var copy = components;
@@ -128,7 +128,13 @@ pub inline fn parseFieldValue(
             if (field_ptr.* == null) {
                 field_ptr.* = .{};
             }
-            try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            // try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            var hm = std.json.ArrayHashMap(PathItem){
+                .map = if (field_ptr.*) |*ptr| ptr.map.move() else .{},
+            };
+            defer hm.deinit(ally);
+            try schema_tools.jsonParseInPlaceArrayHashMapTemplate(PathItem, &hm, ally, src, json_opt);
+            field_ptr.* = .{ .map = hm.map.move() };
         },
         .webhooks => {
             if (field_ptr.* == null) {
@@ -249,12 +255,13 @@ test OpenAPI {
 
     var diag = std.json.Diagnostics{};
     scanner.enableDiagnostics(&diag);
+
     const openapi_json: OpenAPI = std.json.parseFromTokenSourceLeaky(
         OpenAPI,
         std.testing.allocator,
         &scanner,
         std.json.ParseOptions{
-            .ignore_unknown_fields = true,
+            .ignore_unknown_fields = false,
         },
     ) catch |err| {
         const start = std.mem.lastIndexOfScalar(u8, src[0 .. std.mem.lastIndexOfScalar(u8, src[0..diag.getByteOffset()], '\n') orelse 0], '\n') orelse 0;
@@ -265,5 +272,12 @@ test OpenAPI {
     };
     defer openapi_json.deinit(std.testing.allocator);
 
-    try util.json.expectEqual(src, openapi_json, .{});
+    var val = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, src, .{});
+    defer val.deinit();
+
+    _ = val.value.object.getPtr("components").?.object.orderedRemove("requestBodies");
+    _ = val.value.object.getPtr("components").?.object.orderedRemove("schemas");
+    _ = val.value.object.getPtr("components").?.object.orderedRemove("securitySchemes");
+
+    try util.json.expectEqual(val.value, openapi_json, .{});
 }

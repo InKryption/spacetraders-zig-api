@@ -163,7 +163,7 @@ pub fn expectEqual(
         .bool,
         .integer,
         .float,
-        => |expected, tag| try std.testing.expectEqual(expected, @field(b, @tagName(tag))),
+        => |expected, tag| try std.testing.expectEqual(fmtStringify(expected, .{}), fmtStringify(@field(b, @tagName(tag)), .{})),
 
         inline //
         .number_string,
@@ -172,26 +172,29 @@ pub fn expectEqual(
 
         .array => |expected| {
             try std.testing.expectEqual(expected.items.len, b.array.items.len);
-            for (expected.items, b.array.items, 0..) |expected_item, actual_item, i| {
+            const least = @min(expected.items.len, b.array.items.len);
+
+            for (expected.items[0..least], b.array.items[0..least], 0..) |expected_item, actual_item, i| {
                 errdefer std.log.err("Difference occurred between elements at index {d}", .{i});
                 try expectEqual(expected_item, actual_item, options);
             }
+
+            try std.testing.expectEqual(expected.items.len, b.array.items.len);
         },
 
         .object => |expected| {
-            try std.testing.expectEqual(expected.count(), b.object.count());
             var iter = expected.iterator();
-            var i: usize = 0;
-            while (iter.next()) |expected_entry| : (i += 1) {
-                errdefer std.log.err("Difference occurred between elements on iteration {d}", .{i});
-                const actual_entry = b.object.getEntry(expected_entry.key_ptr.*) orelse
-                    return if (std.testing.expectEqual(@as(?@TypeOf(expected_entry), expected_entry), null)) |_|
-                    unreachable
-                else |err|
-                    err;
+            while (iter.next()) |expected_entry| {
+                errdefer std.log.err("Error occurred while comparing with expected field '{s}'", .{
+                    expected_entry.key_ptr.*,
+                });
+                const actual_entry = b.object.getEntry(expected_entry.key_ptr.*) orelse {
+                    return error.MissingField;
+                };
                 try std.testing.expectEqualStrings(expected_entry.key_ptr.*, actual_entry.key_ptr.*);
                 try expectEqual(expected_entry.value_ptr.*, actual_entry.value_ptr.*, options);
             }
+            try std.testing.expectEqual(expected.count(), b.object.count());
         },
     }
 }

@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 const util = @import("util");
 
 const schema_tools = @import("schema-tools.zig");
-const PathItem = @import("Paths.zig").Item;
+const PathItem = @import("PathItem.zig");
 const Reference = @import("Reference.zig");
 
 const Webhooks = @This();

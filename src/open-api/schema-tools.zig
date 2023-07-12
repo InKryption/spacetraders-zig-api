@@ -11,7 +11,7 @@ pub inline fn requiredFieldSetBasedOnOptionals(
 ) FieldEnumSet(T) {
     var result = FieldEnumSet(T).initEmpty();
     inline for (@typeInfo(T).Struct.fields) |field| {
-        const is_required = @field(values, field.name) orelse @typeInfo(field.type) != .Optional;
+        const is_required = @field(values, field.name) orelse (@typeInfo(field.type) != .Optional);
         const tag = @field(std.meta.FieldEnum(T), field.name);
         result.setPresent(tag, is_required);
     }
@@ -228,7 +228,6 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
 
         {
             gop.value_ptr.* = .{};
-            errdefer assert(new_fields.orderedRemove(new_key));
 
             if (gop.found_existing) {
                 assert(!old_fields.contains(new_key));
@@ -243,7 +242,19 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
             } else if (old_fields.fetchSwapRemove(new_key)) |old| {
                 gop.key_ptr.* = old.key;
                 gop.value_ptr.* = old.value;
+            } else if (old_fields.popOrNull()) |any_old| {
+                errdefer assert(new_fields.orderedRemove(new_key));
+
+                var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(any_old.key));
+                defer new_str.deinit();
+
+                new_str.clearRetainingCapacity();
+                try jsonParseReallocString(&new_str, source, options);
+
+                gop.key_ptr.* = try new_str.toOwnedSlice();
+                gop.value_ptr.* = any_old.value;
             } else {
+                errdefer assert(new_fields.orderedRemove(new_key));
                 gop.key_ptr.* = try allocator.dupe(u8, new_key);
             }
 
@@ -252,6 +263,70 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
     }
 
     hm.map = new_fields.move();
+}
+
+pub fn jsonParseInPlaceStringSet(
+    set: *std.StringArrayHashMapUnmanaged(void),
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
+) !void {
+    if (try source.next() != .array_begin) {
+        return error.UnexpectedToken;
+    }
+
+    var old_set = set.move();
+    defer for (old_set.keys()) |str| {
+        allocator.free(str);
+    } else old_set.deinit(allocator);
+
+    var new_set = std.StringArrayHashMapUnmanaged(void){};
+    defer for (new_set.keys()) |str| {
+        allocator.free(str);
+    } else new_set.deinit(allocator);
+
+    var string_buffer = std.ArrayList(u8).init(allocator);
+    defer string_buffer.deinit();
+
+    while (true) {
+        switch (try source.peekNextTokenType()) {
+            .array_end => {
+                assert(try source.next() == .array_end);
+                break;
+            },
+            else => return error.UnexpectedToken,
+            .string => {},
+        }
+
+        const string = (try source.allocNextIntoArrayListMax(
+            &string_buffer,
+            .alloc_if_needed,
+            options.max_value_len orelse std.json.default_max_value_len,
+        )) orelse string_buffer.items;
+
+        const gop = try new_set.getOrPut(allocator, string);
+        if (gop.found_existing) {
+            assert(old_set.contains(string));
+            if (options.duplicate_field_behavior == .@"error") {
+                return error.DuplicateField;
+            } else continue;
+        } else if (old_set.fetchSwapRemove(string)) |old| {
+            gop.key_ptr.* = old.key;
+        } else if (old_set.popOrNull()) |any_old| {
+            errdefer assert(new_set.orderedRemove(string));
+
+            var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(any_old.key));
+            defer new_str.deinit();
+
+            new_str.clearRetainingCapacity();
+            try jsonParseReallocString(&new_str, source, options);
+
+            gop.key_ptr.* = try new_str.toOwnedSlice();
+        } else {
+            errdefer assert(new_set.orderedRemove(string));
+            gop.key_ptr.* = try allocator.dupe(u8, string);
+        }
+    }
 }
 
 pub fn jsonParseInPlaceTemplate(
@@ -369,6 +444,15 @@ pub fn stringifyArrayHashMap(
         try options.whitespace.outputIndent(writer);
     }
     try writer.writeByte('}');
+}
+
+pub fn deinitStringSet(
+    allocator: std.mem.Allocator,
+    set: *std.StringArrayHashMapUnmanaged(void),
+) void {
+    for (set.keys()) |str|
+        allocator.free(str);
+    set.deinit(allocator);
 }
 
 /// frees all the keys, deinitialises all the values, and then deinitialises the map

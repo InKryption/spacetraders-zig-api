@@ -2,7 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const schema_tools = @import("schema-tools.zig");
-const PathItem = @import("Paths.zig").Item;
+const PathItem = @import("PathItem.zig");
+const RequestBodyOrRef = @import("request_body_or_ref.zig").RequestBodyOrRef;
 
 const Components = @This();
 // schemas           Map[string, Schema Object]                               An object to hold reusable Schema Objects.
@@ -10,6 +11,9 @@ const Components = @This();
 // parameters        Map[string, Parameter Object | Reference Object]         An object to hold reusable Parameter Objects.
 // examples          Map[string, Example Object | Reference Object]           An object to hold reusable Example Objects.
 // requestBodies     Map[string, Request Body Object | Reference Object]      An object to hold reusable Request Body Objects.
+
+request_bodies: ?std.json.ArrayHashMap(RequestBodyOrRef) = null,
+
 // headers           Map[string, Header Object | Reference Object]            An object to hold reusable Header Objects.
 // securitySchemes   Map[string, Security Scheme Object | Reference Object]   An object to hold reusable Security Scheme Objects.
 // links             Map[string, Link Object | Reference Object]              An object to hold reusable Link Objects.
@@ -20,11 +24,12 @@ path_items: ?std.json.ArrayHashMap(PathItem) = null,
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Components, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Components){
     .path_items = "pathItems",
+    .request_bodies = "requestBodies",
 };
 
-pub fn deinit(components: Components, allocator: std.mem.Allocator) void {
-    _ = allocator;
-    _ = components;
+pub fn deinit(components: *Components, allocator: std.mem.Allocator) void {
+    if (components.path_items) |*path_items|
+        schema_tools.deinitArrayHashMap(allocator, PathItem, path_items);
 }
 
 pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
