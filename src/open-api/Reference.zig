@@ -7,6 +7,8 @@ ref: []const u8 = "",
 summary: ?[]const u8 = null,
 description: ?[]const u8 = null,
 
+pub const empty = Reference{};
+
 pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Reference, .{});
 pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Reference){
     .ref = "$ref",
