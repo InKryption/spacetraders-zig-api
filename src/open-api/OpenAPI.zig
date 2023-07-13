@@ -309,9 +309,5 @@ test OpenAPI {
     var val = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, src, .{});
     defer val.deinit();
 
-    _ = val.value.object.getPtr("components").?.object.orderedRemove("requestBodies");
-    _ = val.value.object.getPtr("components").?.object.orderedRemove("schemas");
-    _ = val.value.object.getPtr("components").?.object.orderedRemove("securitySchemes");
-
     try util.json.expectEqual(val.value, openapi_json, .{});
 }

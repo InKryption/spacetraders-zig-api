@@ -270,7 +270,7 @@ pub const Type = enum {
         _ = options;
         var pse: util.ProgressiveStringToEnum(JsonTag) = .{};
         try util.json.nextProgressiveStringToEnum(source, JsonTag, &pse);
-        const match = try pse.getMatch() orelse error.UnknownField;
+        const match = pse.getMatch() orelse return error.UnknownField;
         return @enumFromInt(@intFromEnum(match));
     }
 

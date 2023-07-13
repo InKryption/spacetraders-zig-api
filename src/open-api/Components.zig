@@ -5,11 +5,12 @@ const schema_tools = @import("schema-tools.zig");
 const PathItem = @import("PathItem.zig");
 const Schema = @import("Schema.zig");
 const RequestBodyOrRef = @import("request_body_or_ref.zig").RequestBodyOrRef;
+const ResponseOrRef = @import("response_or_ref.zig").ResponseOrRef;
 const SecuritySchemeOrRef = @import("security_scheme_or_ref.zig").SecuritySchemeOrRef;
 
 const Components = @This();
 schemas: ?std.json.ArrayHashMap(Schema) = null,
-// responses         Map[string, Response Object | Reference Object]          An object to hold reusable Response Objects.
+responses: ?std.json.ArrayHashMap(ResponseOrRef) = null,
 // parameters        Map[string, Parameter Object | Reference Object]         An object to hold reusable Parameter Objects.
 // examples          Map[string, Example Object | Reference Object]           An object to hold reusable Example Objects.
 // requestBodies     Map[string, Request Body Object | Reference Object]      An object to hold reusable Request Body Objects.
@@ -32,6 +33,12 @@ pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Components){
 };
 
 pub fn deinit(components: *Components, allocator: std.mem.Allocator) void {
+    if (components.schemas) |*schemas|
+        schema_tools.deinitArrayHashMap(allocator, Schema, schemas);
+    if (components.request_bodies) |*request_bodies|
+        schema_tools.deinitArrayHashMap(allocator, RequestBodyOrRef, request_bodies);
+    if (components.security_schemes) |*security_schemes|
+        schema_tools.deinitArrayHashMap(allocator, SecuritySchemeOrRef, security_schemes);
     if (components.path_items) |*path_items|
         schema_tools.deinitArrayHashMap(allocator, PathItem, path_items);
 }
@@ -64,12 +71,14 @@ pub inline fn parseFieldValue(
         .request_bodies,
         .path_items,
         .security_schemes,
+        .responses,
         => {
             const T = switch (field_tag) {
                 .schemas => Schema,
                 .request_bodies => RequestBodyOrRef,
                 .path_items => PathItem,
                 .security_schemes => SecuritySchemeOrRef,
+                .responses => ResponseOrRef,
             };
             if (field_ptr.* == null) {
                 field_ptr.* = .{};

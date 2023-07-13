@@ -8,6 +8,7 @@ const Reference = @import("Reference.zig");
 const RequestBody = @import("RequestBody.zig");
 const Parameter = @import("Parameter.zig");
 const RequestBodyOrRef = @import("request_body_or_ref.zig").RequestBodyOrRef;
+const Responses = @import("Responses.zig");
 
 const PathItem = @This();
 ref: ?[]const u8 = null,
@@ -140,7 +141,7 @@ pub const Operation = struct {
     operation_id: ?[]const u8 = null,
     parameters: ?[]const ParameterOrRef = null,
     request_body: ?RequestBodyOrRef = null,
-    // responses      Responses Object                                  The list of possible responses as they are returned from executing this operation.
+    responses: ?Responses = null,
     // callbacks      Map[string, Callback Object | Reference Object]   A map of possible out-of band callbacks related to the parent operation. The key is a unique identifier for the Callback Object. Each value in the map is a Callback Object that describes a request that may be initiated by the API provider and the expected responses.
     // deprecated     boolean                                           Declares this operation to be deprecated. Consumers SHOULD refrain from usage of the declared operation. Default value is false.
     // security       [Security Requirement Object]                     A declaration of which security mechanisms can be used for this operation. The list of values includes alternative security requirement objects that can be used. Only one of the security requirement objects need to be satisfied to authorize a request. To make security optional, an empty security requirement ({}) can be included in the array. This definition overrides any declared top-level security. To remove a top-level security declaration, an empty array can be used.
@@ -289,6 +290,12 @@ pub const Operation = struct {
                     field_ptr.* = .{ .reference = .{} };
                 }
                 try RequestBodyOrRef.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            },
+            .responses => {
+                if (field_ptr.* == null) {
+                    field_ptr.* = .{};
+                }
+                try Responses.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
             },
         }
     }

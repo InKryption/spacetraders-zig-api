@@ -306,3 +306,38 @@ pub inline fn transmuteComptimePtr(
     const transmuter: Transmuter = .{};
     return transmuter.value;
 }
+
+pub const failing_allocator: std.mem.Allocator = blk: {
+    const static = struct {
+        fn allocImpl(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+            _ = ret_addr;
+            _ = ptr_align;
+            _ = len;
+            _ = ctx;
+            return null;
+        }
+        fn resizeImpl(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+            _ = ret_addr;
+            _ = new_len;
+            _ = buf_align;
+            _ = buf;
+            _ = ctx;
+            return false;
+        }
+        fn freeImpl(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
+            _ = ret_addr;
+            _ = buf_align;
+            _ = buf;
+            _ = ctx;
+            @panic("This allocator should never have been called");
+        }
+    };
+    break :blk std.mem.Allocator{
+        .ptr = undefined,
+        .vtable = &std.mem.Allocator.VTable{
+            .alloc = static.allocImpl,
+            .resize = static.resizeImpl,
+            .free = static.freeImpl,
+        },
+    };
+};

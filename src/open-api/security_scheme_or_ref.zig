@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const util = @import("util");
+
 const schema_tools = @import("schema-tools.zig");
 const SecurityScheme = @import("SecurityScheme.zig");
 const OAuthFlows = @import("OAuthFlows.zig");
@@ -46,7 +48,10 @@ pub const SecuritySchemeOrRef = union(enum) {
             source,
             options,
             &field_set,
+            JsonGlob.parseFieldValue,
         );
+
+        // @panic("TODO");
     }
 };
 
@@ -78,11 +83,15 @@ pub const JsonGlob = struct {
 
     pub fn deinit(glob: *JsonGlob, allocator: std.mem.Allocator) void {
         allocator.free(glob.ref orelse "");
+        allocator.free(glob.summary orelse "");
+
         allocator.free(glob.name orelse "");
         allocator.free(glob.scheme orelse "");
         allocator.free(glob.bearer_format orelse "");
         if (glob.flows) |*flows| flows.deinit(allocator);
         allocator.free(glob.open_id_connect_url orelse "");
+
+        allocator.free(glob.description orelse "");
     }
 
     pub inline fn parseFieldValue(
@@ -93,11 +102,29 @@ pub const JsonGlob = struct {
         source: anytype,
         options: std.json.ParseOptions,
     ) !void {
-        _ = options;
-        _ = source;
-        _ = allocator;
         _ = is_new;
-        _ = field_ptr;
-        @panic("TODO");
+        switch (field_tag) {
+            .ref,
+            .summary,
+            .name,
+            .scheme,
+            .bearer_format,
+            .open_id_connect_url,
+            .description,
+            => {
+                var new_str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(field_ptr.* orelse ""));
+                defer new_str.deinit();
+
+                new_str.clearRetainingCapacity();
+                field_ptr.* = null;
+
+                try schema_tools.jsonParseReallocString(&new_str, source, options);
+                field_ptr.* = try new_str.toOwnedSlice();
+            },
+
+            .type => field_ptr.* = try SecurityScheme.Type.jsonParse(util.failing_allocator, source, options),
+            .in => field_ptr.* = try SecurityScheme.ApiKey.In.jsonParse(util.failing_allocator, source, options),
+            .flows => try OAuthFlows.jsonParseRealloc(&field_ptr.*.?, allocator, source, options),
+        }
     }
 };

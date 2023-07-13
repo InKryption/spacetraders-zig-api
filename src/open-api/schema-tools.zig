@@ -299,7 +299,6 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
             gop.value_ptr.* = Ctx.empty();
         }
 
-        try gop.value_ptr.jsonParseRealloc(allocator, source, options);
         try Ctx.jsonParseRealloc(gop.value_ptr, allocator, source, options);
     }
 
