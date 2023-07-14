@@ -261,3 +261,34 @@ pub const Type = enum {
         };
     } });
 };
+
+pub inline fn asJsonGlob(sec_scheme: SecurityScheme) JsonGlob {
+    return JsonGlob{
+        .type = sec_scheme.data,
+        .description = sec_scheme.description,
+        .name = switch (sec_scheme.data) {
+            .api_key => |api_key| api_key.name,
+            else => null,
+        },
+        .in = switch (sec_scheme.data) {
+            .api_key => |api_key| api_key.in,
+            else => null,
+        },
+        .scheme = switch (sec_scheme.data) {
+            .http => |http| http.scheme,
+            else => null,
+        },
+        .bearer_format = switch (sec_scheme.data) {
+            .http => |http| http.bearer_format,
+            else => null,
+        },
+        .flows = switch (sec_scheme.data) {
+            .oauth2 => |oauth2| oauth2.flows,
+            else => null,
+        },
+        .open_id_connect_url = switch (sec_scheme.data) {
+            .open_id_connect => |open_id_connect| open_id_connect.url,
+            else => null,
+        },
+    };
+}
