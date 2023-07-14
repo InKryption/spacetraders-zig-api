@@ -54,11 +54,26 @@ pub inline fn parseFieldValue(
     source: anytype,
     options: std.json.ParseOptions,
 ) !void {
-    _ = options;
-    _ = source;
-    _ = allocator;
     _ = is_new;
-    _ = field_ptr;
-    switch (field_tag) {}
-    @panic("TODO");
+    switch (field_tag) {
+        .schema => {
+            if (field_ptr.* == null) {
+                field_ptr.* = Schema.empty;
+            }
+            try Schema.jsonParseRealloc(&field_ptr.*.?, allocator, source, options);
+        },
+        .example => {
+            if (field_ptr.* == null) {
+                field_ptr.* = try std.json.parseFromValue(std.json.Value, allocator, .null, options);
+            }
+            var ctx = schema_tools.ParseDynValueInPlaceTryNTimesCtx{ .n = 3 };
+            try schema_tools.parseDynValueInPlace(&field_ptr.*.?, source, options, &ctx);
+        },
+        .examples => {
+            @panic("TODO");
+        },
+        .encoding => {
+            @panic("TODO");
+        },
+    }
 }

@@ -454,6 +454,43 @@ pub fn jsonParseInPlaceTemplate(
     }
 }
 
+pub const ParseDynValueInPlaceTryNTimesCtx = struct {
+    n: usize,
+    limit: ?usize = null,
+
+    pub inline fn resetMode(ctx: @This()) std.heap.ArenaAllocator.ResetMode {
+        if (ctx.limit) |limit|
+            return .{ .retain_with_limit = limit };
+        return .retain_capacity;
+    }
+    pub inline fn tryAgain(ctx: *@This()) bool {
+        const try_again = ctx.n != 0;
+        ctx.n -= @intFromBool(try_again);
+        return try_again;
+    }
+};
+
+pub fn parseDynValueInPlace(
+    value: *std.json.Parsed(std.json.Value),
+    source: anytype,
+    options: std.json.ParseOptions,
+    on_reset_fail_ctx: anytype,
+) std.json.ParseError(@TypeOf(source.*))!void {
+    while (true) {
+        if (value.arena.reset(on_reset_fail_ctx.resetMode())) break;
+        if (on_reset_fail_ctx.tryAgain()) continue;
+        assert(value.arena.reset(.free_all));
+        break;
+    }
+    value.value = .null;
+    value.value = try std.json.parseFromTokenSourceLeaky(
+        std.json.Value,
+        value.arena.allocator(),
+        source,
+        options,
+    );
+}
+
 pub fn stringifyArrayHashMap(
     comptime V: type,
     hm: *const std.json.ArrayHashMap(V),

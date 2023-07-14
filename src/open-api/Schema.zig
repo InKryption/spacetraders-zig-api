@@ -37,8 +37,30 @@ pub fn jsonParseRealloc(
     source: anytype,
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
+    var field_set = schema_tools.FieldEnumSet(Schema).initEmpty();
+    try schema_tools.jsonParseInPlaceTemplate(
+        Schema,
+        result,
+        allocator,
+        source,
+        options,
+        &field_set,
+        Schema.parseFieldValue,
+    );
+}
+
+pub inline fn parseFieldValue(
+    comptime field_tag: std.meta.FieldEnum(Schema),
+    field_ptr: *std.meta.FieldType(Schema, field_tag),
+    is_new: bool,
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
+) !void {
     _ = options;
+    _ = source;
     _ = allocator;
-    _ = result;
+    _ = is_new;
+    _ = field_ptr;
     @panic("TODO");
 }

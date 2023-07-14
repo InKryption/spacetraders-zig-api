@@ -67,6 +67,8 @@ pub inline fn parseFieldValue(
             try schema_tools.jsonParseReallocString(&new_str, source, options);
             field_ptr.* = try new_str.toOwnedSlice();
         },
-        .mapping => {},
+        .mapping => {
+            @panic("TODO");
+        },
     }
 }
