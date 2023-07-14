@@ -243,7 +243,7 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
     var new_fields = std.StringArrayHashMapUnmanaged(V){};
     defer for (new_fields.keys(), new_fields.values()) |key, *value| {
         allocator.free(key);
-        value.deinit(allocator);
+        Ctx.deinit(allocator, value);
     } else new_fields.deinit(allocator);
     try new_fields.ensureUnusedCapacity(allocator, old_fields.count());
 
@@ -289,7 +289,7 @@ pub fn jsonParseInPlaceArrayHashMapTemplate(
             defer new_str.deinit();
 
             new_str.clearRetainingCapacity();
-            try jsonParseReallocString(&new_str, source, options);
+            try new_str.appendSlice(new_key);
 
             gop.key_ptr.* = try new_str.toOwnedSlice();
             gop.value_ptr.* = any_old.value;

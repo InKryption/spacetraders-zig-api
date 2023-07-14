@@ -1,4 +1,5 @@
 const std = @import("std");
+const assert = std.debug.assert;
 
 const util = @import("util");
 
@@ -35,12 +36,47 @@ pub const SecuritySchemeOrRef = union(enum) {
         source: anytype,
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
-        _ = result;
-
         var glob = JsonGlob{};
         defer glob.deinit(allocator);
 
-        var field_set = schema_tools.FieldEnumSet(JsonGlob).initEmpty();
+        switch (result.*) {
+            .security_scheme => |*sec_scheme| {
+                errdefer @compileError("There should be no error beyond this point");
+
+                glob.description = sec_scheme.description;
+                sec_scheme.description = null;
+                switch (sec_scheme.data) {
+                    .api_key => |*api_key| {
+                        glob.name = api_key.name;
+                        glob.in = api_key.in;
+                        api_key.* = SecurityScheme.ApiKey.empty;
+                    },
+                    .http => |*http| {
+                        glob.scheme = http.scheme;
+                        glob.bearer_format = http.bearer_format;
+                        http.* = SecurityScheme.Http.empty;
+                    },
+                    .mutual_tls => |v| comptime assert(@TypeOf(v) == void),
+                    .oauth2 => |*oauth2| {
+                        glob.flows = oauth2.flows;
+                        oauth2.* = SecurityScheme.OAuth2.empty;
+                    },
+                    .open_id_connect => |*oic| {
+                        glob.open_id_connect_url = oic.url;
+                        oic.* = SecurityScheme.OpenIdConnect.empty;
+                    },
+                }
+            },
+            .reference => |*reference| {
+                glob.ref = reference.ref;
+                glob.summary = reference.summary;
+                glob.description = reference.description;
+                reference.* = Reference.empty;
+            },
+        }
+
+        const FieldSet = schema_tools.FieldEnumSet(JsonGlob);
+        var field_set = FieldSet.initEmpty();
         try schema_tools.jsonParseInPlaceTemplate(
             JsonGlob,
             &glob,
@@ -51,7 +87,86 @@ pub const SecuritySchemeOrRef = union(enum) {
             JsonGlob.parseFieldValue,
         );
 
-        // @panic("TODO");
+        if (field_set.contains(.ref)) {
+            if (!field_set.subsetOf(FieldSet.initMany(&.{ .ref, .summary, .description }))) {
+                return error.UnknownField;
+            }
+            result.* = .{ .reference = Reference.empty };
+            const p_ref: *[]const u8 = if (glob.ref) |*ref| ref else return error.MissingField;
+            // zig fmt: off
+            std.mem.swap([]const u8,  p_ref,             &result.reference.ref);
+            std.mem.swap(?[]const u8, &glob.summary,     &result.reference.summary);
+            std.mem.swap(?[]const u8, &glob.description, &result.reference.description);
+            // zig fmt: on
+
+            return;
+        } else if (field_set.contains(.summary)) {
+            return error.UnknownField;
+        }
+
+        if (field_set.contains(.type)) {
+            result.* = .{ .security_scheme = SecurityScheme.empty };
+            std.mem.swap(?[]const u8, &glob.description, &result.security_scheme.description);
+
+            const ty = glob.type.?;
+            switch (ty) {
+                .api_key => {
+                    if (!field_set.subsetOf(FieldSet.initMany(&.{ .type, .description, .name, .in }))) {
+                        return error.UnknownField;
+                    }
+                    result.security_scheme.data = .{ .api_key = SecurityScheme.ApiKey.empty };
+                    const p_name = if (glob.name) |*ptr| ptr else return error.MissingField;
+                    const p_in = if (glob.in) |*ptr| ptr else return error.MissingField;
+                    // zig fmt: off
+                    std.mem.swap([]const u8,               p_name, &result.security_scheme.data.api_key.name);
+                    std.mem.swap(SecurityScheme.ApiKey.In, p_in, &result.security_scheme.data.api_key.in);
+                    // zig fmt: on
+                    return;
+                },
+                .http => {
+                    if (!field_set.subsetOf(FieldSet.initMany(&.{ .type, .description, .scheme, .bearer_format }))) {
+                        return error.UnknownField;
+                    }
+                    result.security_scheme.data = .{ .http = SecurityScheme.Http.empty };
+
+                    const p_scheme = if (glob.scheme) |*ptr| ptr else return error.MissingField;
+                    // zig fmt: off
+                    std.mem.swap([]const u8,  p_scheme,            &result.security_scheme.data.http.scheme);
+                    std.mem.swap(?[]const u8, &glob.bearer_format, &result.security_scheme.data.http.bearer_format);
+                    // zig fmt: on
+                    return;
+                },
+                .mutual_tls => {
+                    if (!field_set.subsetOf(FieldSet.initMany(&.{ .type, .description }))) {
+                        return error.UnknownField;
+                    }
+                    result.security_scheme.data = .mutual_tls;
+                    return;
+                },
+                .oauth2 => {
+                    if (!field_set.subsetOf(FieldSet.initMany(&.{ .type, .description, .flows }))) {
+                        return error.UnknownField;
+                    }
+                    result.security_scheme.data = .{ .oauth2 = SecurityScheme.OAuth2.empty };
+
+                    const p_flows = if (glob.flows) |*ptr| ptr else return error.MissingField;
+                    std.mem.swap(OAuthFlows, p_flows, &result.security_scheme.data.oauth2.flows);
+                    return;
+                },
+                .open_id_connect => {
+                    if (!field_set.subsetOf(FieldSet.initMany(&.{ .type, .description, .open_id_connect_url }))) {
+                        return error.UnknownField;
+                    }
+                    result.security_scheme.data = .{ .open_id_connect = SecurityScheme.OpenIdConnect.empty };
+
+                    const p_url = if (glob.open_id_connect_url) |*ptr| ptr else return error.UnknownField;
+                    std.mem.swap([]const u8, p_url, &result.security_scheme.data.open_id_connect.url);
+                    return;
+                },
+            }
+        }
+
+        return error.MissingField;
     }
 };
 

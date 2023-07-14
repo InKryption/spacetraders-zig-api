@@ -293,7 +293,7 @@ pub const Operation = struct {
             },
             .responses => {
                 if (field_ptr.* == null) {
-                    field_ptr.* = .{};
+                    field_ptr.* = Responses.empty;
                 }
                 try Responses.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
             },
