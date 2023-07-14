@@ -43,10 +43,7 @@ pub fn deinit(components: *Components, allocator: std.mem.Allocator) void {
         schema_tools.deinitArrayHashMap(allocator, PathItem, path_items);
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Components,
-    Components.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Components, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Components,

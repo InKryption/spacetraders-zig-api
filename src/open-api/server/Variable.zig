@@ -40,7 +40,7 @@ pub fn jsonStringify(
         .default = server.default,
         .description = server.description,
     };
-    const generatedStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(@TypeOf(simpler), Variable.json_field_names);
+    const generatedStringify = schema_tools.generateMappedStringify(@TypeOf(simpler), Variable.json_field_names);
     try generatedStringify(simpler, options, writer);
 }
 

@@ -24,10 +24,7 @@ pub fn deinit(discriminator: *Discriminator, allocator: std.mem.Allocator) void 
     }
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Discriminator,
-    Discriminator.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Discriminator, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Discriminator,

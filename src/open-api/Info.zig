@@ -13,8 +13,7 @@ version: []const u8 = "",
 
 pub const empty = Info{};
 
-pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Info, .{});
-pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Info){
+const json_field_names = schema_tools.ZigToJsonFieldNameMap(Info){
     .terms_of_service = "termsOfService",
 };
 
@@ -28,10 +27,7 @@ pub fn deinit(self: Info, allocator: std.mem.Allocator) void {
     allocator.free(self.version);
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Info,
-    Info.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Info, json_field_names);
 
 pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Info {
     var result: Info = Info.empty;
@@ -46,7 +42,7 @@ pub fn jsonParseRealloc(
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
     var field_set = schema_tools.FieldEnumSet(Info).initEmpty();
-    try schema_tools.jsonParseInPlaceTemplate(Info, result, allocator, source, options, &field_set, Info.parseFieldValue);
+    try schema_tools.parseObjectMappedTemplate(Info, result, allocator, source, options, &field_set, json_field_names, Info.parseFieldValue);
 }
 
 pub inline fn parseFieldValue(
@@ -104,7 +100,7 @@ pub const Contact = struct {
         allocator.free(contact.email orelse "");
     }
 
-    pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(Contact, Contact.json_field_names);
+    pub const jsonStringify = schema_tools.generateMappedStringify(Contact, Contact.json_field_names);
 
     pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Contact {
         var result: Contact = Contact.empty;
@@ -153,10 +149,7 @@ pub const License = struct {
     identifier: ?[]const u8 = null,
     url: ?[]const u8 = null,
 
-    pub const empty = License{};
-
-    pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(License, .{});
-    pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(License){};
+    const json_field_names = schema_tools.ZigToJsonFieldNameMap(License){};
 
     pub fn deinit(license: License, allocator: std.mem.Allocator) void {
         allocator.free(license.name);
@@ -164,7 +157,7 @@ pub const License = struct {
         allocator.free(license.url orelse "");
     }
 
-    pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(License, License.json_field_names);
+    pub const jsonStringify = schema_tools.generateMappedStringify(License, License.json_field_names);
 
     pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !License {
         var result: License = License.empty;
@@ -180,13 +173,16 @@ pub const License = struct {
         options: std.json.ParseOptions,
     ) std.json.ParseError(@TypeOf(source.*))!void {
         var field_set = schema_tools.FieldEnumSet(License).initEmpty();
-        try schema_tools.jsonParseInPlaceTemplate(
+        try schema_tools.parseObjectMappedTemplate(
             License,
             result,
+
             allocator,
             source,
             options,
+
             &field_set,
+            License.json_field_names,
             License.parseFieldValue,
         );
     }

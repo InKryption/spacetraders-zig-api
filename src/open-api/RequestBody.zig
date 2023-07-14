@@ -24,10 +24,7 @@ pub fn deinit(reqbody: *RequestBody, allocator: std.mem.Allocator) void {
     allocator.free(reqbody.description orelse "");
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    RequestBody,
-    RequestBody.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(RequestBody, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *RequestBody,

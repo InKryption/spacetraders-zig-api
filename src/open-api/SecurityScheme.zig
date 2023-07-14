@@ -62,10 +62,7 @@ pub const JsonGlob = struct {
         .open_id_connect_url = "openIdConnectUrl",
     };
 
-    pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-        JsonGlob,
-        JsonGlob.json_field_names,
-    );
+    pub const jsonStringify = schema_tools.generateMappedStringify(JsonGlob, json_field_names);
 
     pub fn jsonParseRealloc(
         result: *JsonGlob,

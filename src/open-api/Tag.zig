@@ -24,10 +24,7 @@ pub fn deinit(tags: *Tag, allocator: std.mem.Allocator) void {
     }
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Tag,
-    Tag.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Tag, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Tag,

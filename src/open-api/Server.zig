@@ -7,10 +7,7 @@ url: []const u8 = "",
 description: ?[]const u8 = null,
 variables: ?VariableMap = null,
 
-pub const empty = Server{};
-
-pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(Server, .{});
-pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
+const json_field_names = schema_tools.ZigToJsonFieldNameMap(Server){};
 
 pub const Variable = @import("server/Variable.zig");
 pub const VariableMap = std.json.ArrayHashMap(Variable);
@@ -23,10 +20,7 @@ pub fn deinit(server: *Server, allocator: std.mem.Allocator) void {
     }
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Server,
-    Server.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Server, json_field_names);
 
 pub inline fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !Server {
     var result: Server = .{};
@@ -41,7 +35,7 @@ pub fn jsonParseRealloc(
     options: std.json.ParseOptions,
 ) std.json.ParseError(@TypeOf(source.*))!void {
     var field_set = schema_tools.FieldEnumSet(Server).initEmpty();
-    try schema_tools.jsonParseInPlaceTemplate(Server, result, allocator, source, options, &field_set, Server.parseFieldValue);
+    try schema_tools.parseObjectMappedTemplate(Server, result, allocator, source, options, &field_set, json_field_names, Server.parseFieldValue);
 }
 
 pub inline fn parseFieldValue(

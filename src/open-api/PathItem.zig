@@ -36,10 +36,7 @@ pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(PathItem){
 
 pub const ParameterOrRef = @import("parameter_or_ref.zig").ParameterOrRef;
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    PathItem,
-    PathItem.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(PathItem, json_field_names);
 
 pub fn deinit(item: *PathItem, allocator: std.mem.Allocator) void {
     allocator.free(item.ref orelse "");
@@ -131,6 +128,19 @@ pub inline fn parseFieldValue(
             field_ptr.* = try list.toOwnedSlice(ally);
         },
     }
+}
+
+pub fn asReference(item: PathItem) ?Reference {
+    const ref = item.ref orelse return null;
+    inline for (@typeInfo(PathItem).Struct.fields) |field| {
+        if (@hasField(Reference, field.name)) continue;
+        assert(@field(item, field.name) == null);
+    }
+    return Reference{
+        .ref = ref,
+        .summary = item.summary,
+        .description = item.description,
+    };
 }
 
 pub const Operation = struct {
@@ -300,16 +310,3 @@ pub const Operation = struct {
         }
     }
 };
-
-pub fn asReference(item: PathItem) ?Reference {
-    const ref = item.ref orelse return null;
-    inline for (@typeInfo(PathItem).Struct.fields) |field| {
-        if (@hasField(Reference, field.name)) continue;
-        assert(@field(item, field.name) == null);
-    }
-    return Reference{
-        .ref = ref,
-        .summary = item.summary,
-        .description = item.description,
-    };
-}

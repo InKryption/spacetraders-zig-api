@@ -30,13 +30,13 @@ pub fn requiredFieldSet(
     return result;
 }
 
-pub fn generateJsonStringifyStructWithoutNullsFn(
+pub fn generateMappedStringify(
     comptime T: type,
     comptime field_names: ZigToJsonFieldNameMap(T),
-) @TypeOf(GenerateJsonStringifyStructWithoutNullsFnImpl(T, field_names).stringify) {
-    return GenerateJsonStringifyStructWithoutNullsFnImpl(T, field_names).stringify;
+) @TypeOf(GenerateMappedStringify(T, field_names).stringify) {
+    return GenerateMappedStringify(T, field_names).stringify;
 }
-fn GenerateJsonStringifyStructWithoutNullsFnImpl(
+fn GenerateMappedStringify(
     comptime T: type,
     comptime field_names: ZigToJsonFieldNameMap(T),
 ) type {
@@ -46,39 +46,27 @@ fn GenerateJsonStringifyStructWithoutNullsFnImpl(
             options: std.json.StringifyOptions,
             writer: anytype,
         ) !void {
-            try writer.writeByte('{');
-            var field_output = false;
-            var child_options = options;
-            child_options.whitespace.indent_level += 1;
-
-            inline for (@typeInfo(@TypeOf(structure)).Struct.fields, 0..) |field, i| @"continue": { // <- block label is a hack around the fact we can't continue or break an inline loop based on a runtime condition
-                const value = switch (@typeInfo(field.type)) {
-                    .Optional => @field(structure, field.name) orelse break :@"continue",
-                    else => @field(structure, field.name),
-                };
-                if (@typeInfo(field.type) == .Optional) {
-                    if (@field(structure, field.name) == null)
-                        break :@"continue";
-                }
-                if (i != 0 and field_output) {
-                    try writer.writeByte(',');
-                } else {
-                    field_output = true;
-                }
-                try child_options.whitespace.outputIndent(writer);
-
-                try std.json.stringify(@field(field_names, field.name), options, writer);
-                try writer.writeByte(':');
-                if (child_options.whitespace.separator) {
-                    try writer.writeByte(' ');
-                }
-                try std.json.stringify(value, child_options, writer);
+            var mapped: Mapped = undefined;
+            inline for (@typeInfo(T).Struct.fields) |field| {
+                const json_field_name = @field(field_names, field.name);
+                @field(mapped, json_field_name) = @field(structure, field.name);
             }
-            if (field_output) {
-                try options.whitespace.outputIndent(writer);
-            }
-            try writer.writeByte('}');
+            try std.json.stringify(mapped, options, writer);
         }
+
+        const Mapped = @Type(.{ .Struct = blk: {
+            var fields = @typeInfo(T).Struct.fields[0..].*;
+            for (&fields) |*field| {
+                field.name = @field(field_names, field.name);
+            }
+            break :blk std.builtin.Type.Struct{
+                .layout = .Auto,
+                .backing_integer = null,
+                .is_tuple = false,
+                .decls = &.{},
+                .fields = &fields,
+            };
+        } });
     };
 }
 
@@ -369,7 +357,98 @@ pub fn jsonParseInPlaceStringSet(
     }
 }
 
-pub fn jsonParseInPlaceTemplate(
+pub fn nextMappedField(
+    comptime T: type,
+    source: anytype,
+    options: std.json.ParseOptions,
+    /// the result should be inserted into this set for subsequent calls
+    field_set: FieldEnumSet(T),
+    comptime zig_to_json_field_names: ZigToJsonFieldNameMap(T),
+) !?std.meta.FieldEnum(T) {
+    const JsonToZigFieldNames = JsonToZigFieldNameMap(T, zig_to_json_field_names);
+    const json_to_zig_field_names = JsonToZigFieldNames{};
+
+    const ZigFieldName = std.meta.FieldEnum(T);
+    const JsonFieldName = std.meta.FieldEnum(JsonToZigFieldNames);
+
+    var pse: util.ProgressiveStringToEnum(JsonFieldName) = .{};
+    while (try util.json.nextProgressiveFieldToEnum(source, JsonFieldName, &pse)) : (pse = .{}) {
+        const json_field_name: JsonFieldName = pse.getMatch() orelse {
+            if (options.ignore_unknown_fields) continue;
+            return error.UnknownField;
+        };
+        const zig_field_name: ZigFieldName = switch (json_field_name) {
+            inline else => |tag| blk: {
+                const zig_field_name = @field(json_to_zig_field_names, @tagName(tag));
+                break :blk @field(ZigFieldName, zig_field_name);
+            },
+        };
+        if (field_set.contains(zig_field_name)) switch (options.duplicate_field_behavior) {
+            .@"error" => return error.UnknownField,
+            .use_first => {
+                try source.skipValue();
+                continue;
+            },
+            .use_last => {},
+        };
+        return zig_field_name;
+    }
+
+    return null;
+}
+
+pub fn parseObjectMappedTemplate(
+    comptime T: type,
+    result: *T,
+    //
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
+    //
+    field_set: *FieldEnumSet(T),
+    comptime zig_to_json_field_names: ZigToJsonFieldNameMap(T),
+    /// fn (
+    ///     comptime field_tag: std.meta.FieldEnum(T),
+    ///     field_ptr: *std.meta.FieldType(T, field_tag),
+    ///     is_new: bool,
+    ///     alloctor: std.mem.Allocator,
+    ///     source: anytype,
+    ///     options: std.json.ParseOptions,
+    /// ) std.json.ParseError(@TypeOf(source.*))!void
+    comptime parseFieldInPlace: anytype,
+) std.json.ParseError(@TypeOf(source.*))!void {
+    field_set.* = FieldEnumSet(T).initEmpty();
+
+    if (try source.next() != .object_begin) {
+        return error.UnexpectedToken;
+    }
+
+    while (try nextMappedField(T, source, options, field_set.*, zig_to_json_field_names)) |zig_field_name| {
+        field_set.insert(zig_field_name);
+        const is_duplicate = field_set.contains(zig_field_name);
+        if (is_duplicate) switch (options.duplicate_field_behavior) {
+            .@"error" => return error.DuplicateField,
+            .use_first => {
+                try source.skipValue();
+                continue;
+            },
+            .use_last => {},
+        };
+
+        switch (zig_field_name) {
+            inline else => |tag| try parseFieldInPlace(
+                tag,
+                &@field(result, @tagName(tag)),
+                !is_duplicate,
+                allocator,
+                source,
+                options,
+            ),
+        }
+    }
+}
+
+fn jsonParseInPlaceTemplate_(
     comptime T: type,
     result: *T,
     allocator: std.mem.Allocator,

@@ -20,10 +20,7 @@ pub fn deinit(ref: Reference, allocator: std.mem.Allocator) void {
     allocator.free(ref.description orelse "");
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Reference,
-    Reference.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Reference, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Reference,

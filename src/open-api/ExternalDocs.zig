@@ -16,10 +16,7 @@ pub fn deinit(docs: ExternalDocs, allocator: std.mem.Allocator) void {
     allocator.free(docs.url);
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    ExternalDocs,
-    ExternalDocs.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(ExternalDocs, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *ExternalDocs,

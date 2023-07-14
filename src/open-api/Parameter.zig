@@ -22,10 +22,7 @@ pub fn deinit(param: Parameter, allocator: std.mem.Allocator) void {
     allocator.free(param.description orelse "");
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Parameter,
-    Parameter.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Parameter, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Parameter,

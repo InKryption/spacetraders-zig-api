@@ -11,7 +11,6 @@ pub const PathItem = @import("PathItem.zig");
 pub const Server = @import("Server.zig");
 pub const Parameter = @import("Parameter.zig");
 pub const Reference = @import("Reference.zig");
-pub const Webhooks = @import("Webhooks.zig");
 pub const SecurityRequirement = @import("SecurityRequirement.zig");
 pub const Tag = @import("Tag.zig");
 pub const ExternalDocs = @import("ExternalDocs.zig");
@@ -22,16 +21,13 @@ info: Info = .{},
 json_schema_dialect: ?[]const u8 = null,
 servers: ?[]const Server = null,
 paths: ?std.json.ArrayHashMap(PathItem) = null,
-webhooks: ?Webhooks = null,
+webhooks: ?std.json.ArrayHashMap(PathItem) = null,
 components: ?Components = null,
 security: ?[]const SecurityRequirement = null,
 tags: ?Tags = null,
 external_docs: ?ExternalDocs = null,
 
-pub const empty = OpenAPI{};
-
-pub const json_required_fields = schema_tools.requiredFieldSetBasedOnOptionals(OpenAPI, .{});
-pub const json_field_names = schema_tools.ZigToJsonFieldNameMap(OpenAPI){
+const json_field_names = schema_tools.ZigToJsonFieldNameMap(OpenAPI){
     .json_schema_dialect = "jsonSchemaDialect",
     .external_docs = "externalDocs",
 };
@@ -66,113 +62,109 @@ pub fn deinit(self: OpenAPI, allocator: std.mem.Allocator) void {
     }
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    OpenAPI,
-    OpenAPI.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(OpenAPI, json_field_names);
 
-pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !OpenAPI {
-    var result: OpenAPI = .{};
-    errdefer result.deinit(allocator);
-    try jsonParseRealloc(&result, allocator, source, options);
-    return result;
-}
-
-pub fn jsonParseRealloc(
-    result: *OpenAPI,
+pub fn jsonParse(
     allocator: std.mem.Allocator,
     source: anytype,
     options: std.json.ParseOptions,
-) std.json.ParseError(@TypeOf(source.*))!void {
+) std.json.ParseError(@TypeOf(source.*))!OpenAPI {
+    var result: OpenAPI = .{};
+    errdefer result.deinit(allocator);
+
     var field_set = schema_tools.FieldEnumSet(OpenAPI).initEmpty();
-    try schema_tools.jsonParseInPlaceTemplate(
+    try schema_tools.parseObjectMappedTemplate(
         OpenAPI,
-        result,
+        &result,
+
         allocator,
         source,
         options,
+
         &field_set,
-        OpenAPI.parseFieldValue,
+        json_field_names,
+        parseFieldValue,
     );
+    if (!field_set.supersetOf(schema_tools.requiredFieldSetBasedOnOptionals(OpenAPI, .{}))) {
+        return error.MissingField;
+    }
+
+    return result;
 }
 
 pub inline fn parseFieldValue(
     comptime field_tag: std.meta.FieldEnum(OpenAPI),
     field_ptr: anytype,
     is_new: bool,
-    ally: std.mem.Allocator,
-    src: anytype,
-    json_opt: std.json.ParseOptions,
+    allocator: std.mem.Allocator,
+    source: anytype,
+    options: std.json.ParseOptions,
 ) !void {
     _ = is_new;
     switch (field_tag) {
         inline .openapi, .json_schema_dialect => {
-            var str = std.ArrayList(u8).fromOwnedSlice(ally, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
+            var str = std.ArrayList(u8).fromOwnedSlice(allocator, @constCast(@as(?[]const u8, field_ptr.*) orelse ""));
             defer str.deinit();
             str.clearRetainingCapacity();
             field_ptr.* = "";
-            try schema_tools.jsonParseReallocString(&str, src, json_opt);
+            try schema_tools.jsonParseReallocString(&str, source, options);
             field_ptr.* = try str.toOwnedSlice();
         },
-        .info => try Info.jsonParseRealloc(field_ptr, ally, src, json_opt),
+        .info => try Info.jsonParseRealloc(field_ptr, allocator, source, options),
         .servers => {
             var list = std.ArrayListUnmanaged(Server).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
             defer {
                 for (list.items) |*server|
-                    server.deinit(ally);
-                list.deinit(ally);
+                    server.deinit(allocator);
+                list.deinit(allocator);
             }
             field_ptr.* = null;
-            try schema_tools.jsonParseInPlaceArrayListTemplate(Server, &list, ally, src, json_opt);
-            field_ptr.* = try list.toOwnedSlice(ally);
+            try schema_tools.jsonParseInPlaceArrayListTemplate(Server, &list, allocator, source, options);
+            field_ptr.* = try list.toOwnedSlice(allocator);
         },
-        .paths => {
+        .paths,
+        .webhooks,
+        => {
             if (field_ptr.* == null) {
                 field_ptr.* = .{};
             }
-            // try Paths.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            // try Paths.jsonParseRealloc(&field_ptr.*.?, allocator, source, options);
             var hm = std.json.ArrayHashMap(PathItem){
                 .map = if (field_ptr.*) |*ptr| ptr.map.move() else .{},
             };
-            defer hm.deinit(ally);
+            defer hm.deinit(allocator);
             try schema_tools.jsonParseInPlaceArrayHashMapTemplate(
                 PathItem,
                 &hm,
-                ally,
-                src,
-                json_opt,
+                allocator,
+                source,
+                options,
                 schema_tools.ParseArrayHashMapInPlaceObjCtx(PathItem),
             );
             field_ptr.* = .{ .map = hm.map.move() };
-        },
-        .webhooks => {
-            if (field_ptr.* == null) {
-                field_ptr.* = .{};
-            }
-            try Webhooks.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
         },
         .components => {
             if (field_ptr.* == null) {
                 field_ptr.* = .{};
             }
-            try Components.jsonParseRealloc(&field_ptr.*.?, ally, src, json_opt);
+            try Components.jsonParseRealloc(&field_ptr.*.?, allocator, source, options);
         },
         .security => {
             var list = std.ArrayListUnmanaged(SecurityRequirement).fromOwnedSlice(@constCast(field_ptr.* orelse &.{}));
             defer {
                 for (list.items) |*security|
-                    security.deinit(ally);
-                list.deinit(ally);
+                    security.deinit(allocator);
+                list.deinit(allocator);
             }
             field_ptr.* = null;
-            try schema_tools.jsonParseInPlaceArrayListTemplate(SecurityRequirement, &list, ally, src, json_opt);
-            field_ptr.* = try list.toOwnedSlice(ally);
+            try schema_tools.jsonParseInPlaceArrayListTemplate(SecurityRequirement, &list, allocator, source, options);
+            field_ptr.* = try list.toOwnedSlice(allocator);
         },
         .tags => {
             var tags: Tags = field_ptr.* orelse Tags{};
-            errdefer tags.deinit(ally);
+            errdefer tags.deinit(allocator);
             field_ptr.* = null;
-            try tags.jsonParseRealloc(ally, src, json_opt);
+            try tags.jsonParseRealloc(allocator, source, options);
             field_ptr.* = tags;
         },
         .external_docs => @panic("TODO"),

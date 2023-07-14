@@ -26,10 +26,7 @@ pub fn deinit(schema: *Schema, allocator: std.mem.Allocator) void {
         docs.deinit(allocator);
 }
 
-pub const jsonStringify = schema_tools.generateJsonStringifyStructWithoutNullsFn(
-    Schema,
-    Schema.json_field_names,
-);
+pub const jsonStringify = schema_tools.generateMappedStringify(Schema, json_field_names);
 
 pub fn jsonParseRealloc(
     result: *Schema,
